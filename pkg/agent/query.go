@@ -71,3 +71,11 @@ func (q *Query) GetExitReason() ExitReason {
 	defer q.mu.Unlock()
 	return q.state.ExitReason
 }
+
+// State returns the current loop state snapshot.
+// The caller should not mutate the returned state.
+func (q *Query) State() *LoopState {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.state
+}

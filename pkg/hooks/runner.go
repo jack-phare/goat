@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,9 @@ type Runner struct {
 	emitCh      chan<- types.SDKMessage
 	sessionID   string
 	cwd         string
+
+	mu          sync.RWMutex
+	scopedHooks map[string]map[types.HookEvent][]CallbackMatcher // scopeID → event → matchers
 }
 
 // NewRunner creates a Runner from configuration.
@@ -41,11 +45,30 @@ func NewRunner(config RunnerConfig) *Runner {
 	}
 }
 
+// RegisterScoped adds hooks for a specific scope (e.g., a subagent ID).
+// These hooks are merged with base hooks when Fire is called.
+func (r *Runner) RegisterScoped(scopeID string, hookMap map[types.HookEvent][]CallbackMatcher) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.scopedHooks == nil {
+		r.scopedHooks = make(map[string]map[types.HookEvent][]CallbackMatcher)
+	}
+	r.scopedHooks[scopeID] = hookMap
+}
+
+// UnregisterScoped removes hooks for a specific scope.
+func (r *Runner) UnregisterScoped(scopeID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.scopedHooks, scopeID)
+}
+
 // Fire executes all matching hooks for an event, collecting results.
 // It implements agent.HookRunner.
 func (r *Runner) Fire(ctx context.Context, event types.HookEvent, input any) ([]agent.HookResult, error) {
-	matchers, ok := r.hooks[event]
-	if !ok || len(matchers) == 0 {
+	// Merge base hooks with all scoped hooks for this event
+	matchers := r.mergeMatchers(event)
+	if len(matchers) == 0 {
 		return nil, nil
 	}
 
@@ -196,6 +219,30 @@ func convertOutput(output HookJSONOutput) agent.HookResult {
 		Reason:             s.Reason,
 		HookSpecificOutput: s.HookSpecificOutput,
 	}
+}
+
+// mergeMatchers combines base hooks with all scoped hooks for the given event.
+func (r *Runner) mergeMatchers(event types.HookEvent) []CallbackMatcher {
+	base := r.hooks[event]
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if len(r.scopedHooks) == 0 {
+		return base
+	}
+
+	// Copy base matchers to avoid mutation
+	merged := make([]CallbackMatcher, len(base))
+	copy(merged, base)
+
+	for _, hookMap := range r.scopedHooks {
+		if scoped, ok := hookMap[event]; ok {
+			merged = append(merged, scoped...)
+		}
+	}
+
+	return merged
 }
 
 // Verify Runner implements agent.HookRunner at compile time.

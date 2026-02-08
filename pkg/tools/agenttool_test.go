@@ -136,3 +136,40 @@ func TestAgent_OptionalFields(t *testing.T) {
 		t.Error("expected max_turns to be 10")
 	}
 }
+
+func TestAgent_NameAndModeFields(t *testing.T) {
+	spawner := &mockSpawner{
+		result: AgentResult{AgentID: "a1", Output: "ok"},
+	}
+	tool := &AgentTool{Spawner: spawner}
+
+	tool.Execute(context.Background(), map[string]any{
+		"description":   "test",
+		"prompt":        "test",
+		"subagent_type": "general",
+		"name":          "my-agent",
+		"mode":          "bypassPermissions",
+	})
+
+	if spawner.input.Name == nil || *spawner.input.Name != "my-agent" {
+		t.Error("expected name to be 'my-agent'")
+	}
+	if spawner.input.Mode == nil || *spawner.input.Mode != "bypassPermissions" {
+		t.Error("expected mode to be 'bypassPermissions'")
+	}
+}
+
+func TestAgent_InputSchema_HasNameAndMode(t *testing.T) {
+	tool := &AgentTool{}
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("expected properties in schema")
+	}
+	if _, ok := props["name"]; !ok {
+		t.Error("expected 'name' in schema properties")
+	}
+	if _, ok := props["mode"]; !ok {
+		t.Error("expected 'mode' in schema properties")
+	}
+}

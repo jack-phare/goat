@@ -191,4 +191,12 @@ type AgentDefinition struct {
 	Model           string   `json:"model,omitempty"`
 	MCPServers      []string `json:"mcpServers,omitempty"`
 	MaxTurns        *int     `json:"maxTurns,omitempty"`
+
+	// Extended fields (Spec 08)
+	Name             string                          `json:"name,omitempty"`
+	PermissionMode   string                          `json:"permissionMode,omitempty"`
+	Skills           []string                        `json:"skills,omitempty"`
+	Memory           string                          `json:"memory,omitempty"`
+	Hooks            map[HookEvent][]HookCallbackMatcher `json:"hooks,omitempty"`
+	CriticalReminder string                          `json:"criticalSystemReminder_EXPERIMENTAL,omitempty"`
 }

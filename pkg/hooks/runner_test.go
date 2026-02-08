@@ -758,6 +758,140 @@ func TestRunner_EmitChannelNil(t *testing.T) {
 	}
 }
 
+func TestRunner_RegisterScoped(t *testing.T) {
+	baseCalled := false
+	scopedCalled := false
+
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					baseCalled = true
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{Reason: "base"}}, nil
+				}}},
+			},
+		},
+	})
+
+	// Register scoped hooks
+	r.RegisterScoped("agent-1", map[types.HookEvent][]CallbackMatcher{
+		types.HookEventPreToolUse: {
+			{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+				scopedCalled = true
+				return HookJSONOutput{Sync: &SyncHookJSONOutput{Reason: "scoped"}}, nil
+			}}},
+		},
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !baseCalled {
+		t.Error("base hook should have been called")
+	}
+	if !scopedCalled {
+		t.Error("scoped hook should have been called")
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (base + scoped), got %d", len(results))
+	}
+}
+
+func TestRunner_UnregisterScoped(t *testing.T) {
+	callCount := 0
+
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					callCount++
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{}}, nil
+				}}},
+			},
+		},
+	})
+
+	// Register and then unregister scoped hooks
+	r.RegisterScoped("agent-1", map[types.HookEvent][]CallbackMatcher{
+		types.HookEventPreToolUse: {
+			{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+				callCount++
+				return HookJSONOutput{Sync: &SyncHookJSONOutput{}}, nil
+			}}},
+		},
+	})
+
+	r.UnregisterScoped("agent-1")
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call (only base, scoped removed), got %d", callCount)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+}
+
+func TestRunner_ScopedOnlyEvent(t *testing.T) {
+	// Scoped hooks for an event that has no base hooks
+	called := false
+	r := NewRunner(RunnerConfig{})
+
+	r.RegisterScoped("agent-1", map[types.HookEvent][]CallbackMatcher{
+		types.HookEventSubagentStart: {
+			{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+				called = true
+				return HookJSONOutput{Sync: &SyncHookJSONOutput{Reason: "scoped-only"}}, nil
+			}}},
+		},
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventSubagentStart, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("scoped hook should have been called")
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Reason != "scoped-only" {
+		t.Errorf("reason = %q, want 'scoped-only'", results[0].Reason)
+	}
+}
+
+func TestRunner_MultipleScopedHooks(t *testing.T) {
+	callCount := 0
+	r := NewRunner(RunnerConfig{})
+
+	for _, id := range []string{"agent-1", "agent-2"} {
+		r.RegisterScoped(id, map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					callCount++
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{}}, nil
+				}}},
+			},
+		})
+	}
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 calls from 2 scoped hooks, got %d", callCount)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+}
+
 func TestRunner_EmitChannelError(t *testing.T) {
 	ch := make(chan types.SDKMessage, 100)
 

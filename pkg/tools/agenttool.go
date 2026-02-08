@@ -14,6 +14,8 @@ type AgentInput struct {
 	Resume          *string
 	RunInBackground *bool
 	MaxTurns        *int
+	Name            *string // display name for the agent
+	Mode            *string // permission mode override
 }
 
 // AgentResult contains the result from a subagent.
@@ -77,6 +79,14 @@ func (a *AgentTool) InputSchema() map[string]any {
 				"type":        "integer",
 				"description": "Maximum number of agentic turns before stopping",
 			},
+			"name": map[string]any{
+				"type":        "string",
+				"description": "Optional display name for the agent",
+			},
+			"mode": map[string]any{
+				"type":        "string",
+				"description": "Optional permission mode override",
+			},
 		},
 		"required": []string{"description", "prompt", "subagent_type"},
 	}
@@ -123,6 +133,12 @@ func (a *AgentTool) Execute(ctx context.Context, input map[string]any) (ToolOutp
 	if mt, ok := input["max_turns"].(float64); ok {
 		turns := int(mt)
 		agentInput.MaxTurns = &turns
+	}
+	if n, ok := input["name"].(string); ok {
+		agentInput.Name = &n
+	}
+	if mode, ok := input["mode"].(string); ok {
+		agentInput.Mode = &mode
 	}
 
 	result, err := spawner.Spawn(ctx, agentInput)

@@ -63,6 +63,10 @@ type AgentConfig struct {
 	// Agent identity
 	AgentType string // "" for main agent, "explore", "plan", "task", etc.
 
+	// Subagent behavior
+	BackgroundMode    bool // auto-deny unpermitted tools, disable AskUser, no MCP
+	CanSpawnSubagents bool // false = Agent tool filtered from registry
+
 	// Prompt version
 	PromptVersion string // e.g., "2.1.37"
 
