@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -338,5 +339,331 @@ func TestUnmarshalSDKMessage_InvalidJSON(t *testing.T) {
 	_, err := UnmarshalSDKMessage([]byte(`{invalid`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// --- Stub Tests for Unimplemented Features ---
+
+func TestUnmarshalSDKMessage_PartialMessageStreaming(t *testing.T) {
+	t.Skip("not yet implemented: partial message streaming (content_block_delta)")
+}
+
+// --- Test Parity: Message Parser (ported from Python Agent SDK) ---
+
+func TestUnmarshalSDKMessage_UserMessageUUID(t *testing.T) {
+	// Verify UUID field is preserved through marshal/unmarshal
+	id := uuid.New()
+	orig := UserMessage{
+		BaseMessage: BaseMessage{UUID: id, SessionID: "s1"},
+		Type:        MessageTypeUser,
+		Message:     MessageParam{Role: "user", Content: "hello"},
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	um := msg.(*UserMessage)
+	if um.UUID != id {
+		t.Errorf("UUID = %s, want %s", um.UUID, id)
+	}
+	if um.GetSessionID() != "s1" {
+		t.Errorf("SessionID = %q, want s1", um.GetSessionID())
+	}
+}
+
+func TestUnmarshalSDKMessage_UserMessageToolResult(t *testing.T) {
+	// UserMessage with content containing tool result blocks
+	orig := UserMessage{
+		BaseMessage: BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+		Type:        MessageTypeUser,
+		Message: MessageParam{
+			Role: "user",
+			Content: []map[string]any{
+				{"type": "tool_result", "tool_use_id": "call_123", "content": "tool output here"},
+			},
+		},
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	um := msg.(*UserMessage)
+	content, ok := um.Message.Content.([]any)
+	if !ok {
+		t.Fatalf("expected []any content, got %T", um.Message.Content)
+	}
+	if len(content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(content))
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected map content block, got %T", content[0])
+	}
+	if block["type"] != "tool_result" {
+		t.Errorf("block type = %q, want tool_result", block["type"])
+	}
+	if block["tool_use_id"] != "call_123" {
+		t.Errorf("tool_use_id = %q, want call_123", block["tool_use_id"])
+	}
+}
+
+func TestUnmarshalSDKMessage_UserMessageToolResultError(t *testing.T) {
+	// ToolResult with is_error=true
+	orig := UserMessage{
+		BaseMessage: BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+		Type:        MessageTypeUser,
+		Message: MessageParam{
+			Role: "user",
+			Content: []map[string]any{
+				{"type": "tool_result", "tool_use_id": "call_456", "content": "error occurred", "is_error": true},
+			},
+		},
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	um := msg.(*UserMessage)
+	content := um.Message.Content.([]any)
+	block := content[0].(map[string]any)
+	if block["is_error"] != true {
+		t.Errorf("is_error = %v, want true", block["is_error"])
+	}
+}
+
+func TestUnmarshalSDKMessage_UserMessageMixedContent(t *testing.T) {
+	// UserMessage with 4 mixed content blocks in order
+	orig := UserMessage{
+		BaseMessage: BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+		Type:        MessageTypeUser,
+		Message: MessageParam{
+			Role: "user",
+			Content: []map[string]any{
+				{"type": "text", "text": "first"},
+				{"type": "tool_result", "tool_use_id": "call_1", "content": "output1"},
+				{"type": "text", "text": "middle"},
+				{"type": "tool_result", "tool_use_id": "call_2", "content": "output2"},
+			},
+		},
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	um := msg.(*UserMessage)
+	content := um.Message.Content.([]any)
+	if len(content) != 4 {
+		t.Fatalf("expected 4 content blocks, got %d", len(content))
+	}
+	// Verify order preserved
+	block0 := content[0].(map[string]any)
+	block1 := content[1].(map[string]any)
+	if block0["type"] != "text" {
+		t.Errorf("block[0] type = %q, want text", block0["type"])
+	}
+	if block1["type"] != "tool_result" {
+		t.Errorf("block[1] type = %q, want tool_result", block1["type"])
+	}
+}
+
+func TestUnmarshalSDKMessage_UserMessageParentToolUse(t *testing.T) {
+	// UserMessage inside a subagent with parent_tool_use_id
+	parentID := "toolu_parent_123"
+	orig := UserMessage{
+		BaseMessage:     BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+		Type:            MessageTypeUser,
+		Message:         MessageParam{Role: "user", Content: "subagent input"},
+		ParentToolUseID: &parentID,
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	um := msg.(*UserMessage)
+	if um.ParentToolUseID == nil {
+		t.Fatal("expected non-nil ParentToolUseID")
+	}
+	if *um.ParentToolUseID != parentID {
+		t.Errorf("ParentToolUseID = %q, want %q", *um.ParentToolUseID, parentID)
+	}
+}
+
+func TestUnmarshalSDKMessage_UserMessageToolUseResult(t *testing.T) {
+	// UserMessage with nested ToolUseResult metadata
+	orig := UserMessage{
+		BaseMessage: BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+		Type:        MessageTypeUser,
+		Message:     MessageParam{Role: "user", Content: "done editing"},
+		ToolUseResult: map[string]any{
+			"type":     "tool_result",
+			"tool_name": "Edit",
+			"old_file":  "original.go",
+			"new_file":  "modified.go",
+		},
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	um := msg.(*UserMessage)
+	tur, ok := um.ToolUseResult.(map[string]any)
+	if !ok {
+		t.Fatalf("ToolUseResult type = %T, want map[string]any", um.ToolUseResult)
+	}
+	if tur["tool_name"] != "Edit" {
+		t.Errorf("tool_name = %v, want Edit", tur["tool_name"])
+	}
+}
+
+func TestUnmarshalSDKMessage_UserMessageStringContent(t *testing.T) {
+	// Content as a plain string (not array)
+	data := []byte(`{"type":"user","uuid":"` + uuid.New().String() + `","session_id":"s1","message":{"role":"user","content":"plain string content"}}`)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	um := msg.(*UserMessage)
+	str, ok := um.Message.Content.(string)
+	if !ok {
+		t.Fatalf("expected string content, got %T", um.Message.Content)
+	}
+	if str != "plain string content" {
+		t.Errorf("content = %q, want 'plain string content'", str)
+	}
+}
+
+func TestUnmarshalSDKMessage_AssistantMessageParentToolUse(t *testing.T) {
+	// AssistantMessage inside a subagent with parent_tool_use_id
+	parentID := "toolu_parent_456"
+	orig := AssistantMessage{
+		BaseMessage:     BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+		Type:            MessageTypeAssistant,
+		Message:         BetaMessage{ID: "msg_1", Type: "message", Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "subagent response"}}},
+		ParentToolUseID: &parentID,
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	am := msg.(*AssistantMessage)
+	if am.ParentToolUseID == nil {
+		t.Fatal("expected non-nil ParentToolUseID")
+	}
+	if *am.ParentToolUseID != parentID {
+		t.Errorf("ParentToolUseID = %q, want %q", *am.ParentToolUseID, parentID)
+	}
+}
+
+func TestUnmarshalSDKMessage_AssistantMessageError(t *testing.T) {
+	// AssistantMessage with various error types
+	tests := []struct {
+		name  string
+		err   AssistantError
+	}{
+		{"authentication_failed", ErrAuthenticationFailed},
+		{"rate_limit", ErrRateLimit},
+		{"unknown", ErrUnknown},
+		{"billing_error", ErrBillingError},
+		{"server_error", ErrServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errVal := tt.err
+			orig := AssistantMessage{
+				BaseMessage: BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+				Type:        MessageTypeAssistant,
+				Message:     BetaMessage{ID: "msg_err", Type: "message", Role: "assistant"},
+				Error:       &errVal,
+			}
+			data := mustMarshal(t, orig)
+
+			msg, err := UnmarshalSDKMessage(data)
+			if err != nil {
+				t.Fatalf("UnmarshalSDKMessage: %v", err)
+			}
+			am := msg.(*AssistantMessage)
+			if am.Error == nil {
+				t.Fatal("expected non-nil Error")
+			}
+			if *am.Error != tt.err {
+				t.Errorf("Error = %q, want %q", *am.Error, tt.err)
+			}
+		})
+	}
+}
+
+func TestUnmarshalSDKMessage_ErrorContainsData(t *testing.T) {
+	// When UnmarshalSDKMessage gets an unknown type, the error should be informative
+	data := []byte(`{"type":"bogus_type_12345","uuid":"abc","extra":"stuff"}`)
+	_, err := UnmarshalSDKMessage(data)
+	if err == nil {
+		t.Fatal("expected error for unknown type")
+	}
+	// Error message should contain the type that was problematic
+	errStr := err.Error()
+	if !strings.Contains(errStr, "bogus_type_12345") {
+		t.Errorf("error %q should contain the unknown type 'bogus_type_12345'", errStr)
+	}
+}
+
+func TestUnmarshalSDKMessage_MissingRequiredFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr bool
+	}{
+		{
+			name:    "user_missing_message",
+			json:    `{"type":"user"}`,
+			wantErr: false, // Go zero-value: no error, just empty MessageParam
+		},
+		{
+			name:    "assistant_missing_message",
+			json:    `{"type":"assistant"}`,
+			wantErr: false, // Go zero-value: BetaMessage will be zero
+		},
+		{
+			name:    "result_missing_subtype",
+			json:    `{"type":"result"}`,
+			wantErr: false, // Subtype will be zero value ""
+		},
+		{
+			name:    "missing_type_entirely",
+			json:    `{}`,
+			wantErr: true, // empty type → unknown
+		},
+		{
+			name:    "system_missing_subtype",
+			json:    `{"type":"system"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := UnmarshalSDKMessage([]byte(tt.json))
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }

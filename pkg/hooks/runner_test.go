@@ -670,6 +670,208 @@ func TestMatchToolName_TypedInput(t *testing.T) {
 	}
 }
 
+// --- Test Parity: Hook Event-Specific Tests (ported from Python Agent SDK) ---
+
+func TestRunner_NotificationEvent(t *testing.T) {
+	// Notification hook fires with message and notification_type
+	var receivedInput any
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventNotification: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					receivedInput = input
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{Reason: "notified"}}, nil
+				}}},
+			},
+		},
+	})
+
+	input := &NotificationHookInput{
+		BaseHookInput:    BaseHookInput{SessionID: "test-session"},
+		HookEventName:    "Notification",
+		Message:          "Build completed",
+		NotificationType: "build_status",
+	}
+	results, err := r.Fire(context.Background(), types.HookEventNotification, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Reason != "notified" {
+		t.Errorf("reason = %q, want 'notified'", results[0].Reason)
+	}
+	// Verify typed input was passed through
+	ni, ok := receivedInput.(*NotificationHookInput)
+	if !ok {
+		t.Fatalf("input type = %T, want *NotificationHookInput", receivedInput)
+	}
+	if ni.Message != "Build completed" {
+		t.Errorf("input.Message = %q, want 'Build completed'", ni.Message)
+	}
+	if ni.NotificationType != "build_status" {
+		t.Errorf("input.NotificationType = %q, want 'build_status'", ni.NotificationType)
+	}
+}
+
+func TestRunner_PermissionRequestEvent(t *testing.T) {
+	// PermissionRequest hook fires with tool_name and tool_input
+	var receivedInput any
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPermissionRequest: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					receivedInput = input
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{Decision: "approve"}}, nil
+				}}},
+			},
+		},
+	})
+
+	input := &PermissionRequestHookInput{
+		BaseHookInput: BaseHookInput{SessionID: "test-session"},
+		HookEventName: "PermissionRequest",
+		ToolName:      "Bash",
+		ToolInput:     map[string]any{"command": "rm -rf /"},
+	}
+	results, err := r.Fire(context.Background(), types.HookEventPermissionRequest, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Decision != "allow" {
+		t.Errorf("decision = %q, want 'allow' (mapped from 'approve')", results[0].Decision)
+	}
+	pri, ok := receivedInput.(*PermissionRequestHookInput)
+	if !ok {
+		t.Fatalf("input type = %T, want *PermissionRequestHookInput", receivedInput)
+	}
+	if pri.ToolName != "Bash" {
+		t.Errorf("input.ToolName = %q, want 'Bash'", pri.ToolName)
+	}
+}
+
+func TestRunner_SubagentStartEvent(t *testing.T) {
+	// SubagentStart hook fires with agent_id and agent_type
+	var receivedInput any
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventSubagentStart: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					receivedInput = input
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{Reason: "subagent starting"}}, nil
+				}}},
+			},
+		},
+	})
+
+	input := &SubagentStartHookInput{
+		BaseHookInput: BaseHookInput{SessionID: "test-session"},
+		HookEventName: "SubagentStart",
+		AgentID:       "agent-explore-001",
+		AgentType:     "Explore",
+	}
+	results, err := r.Fire(context.Background(), types.HookEventSubagentStart, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	si, ok := receivedInput.(*SubagentStartHookInput)
+	if !ok {
+		t.Fatalf("input type = %T, want *SubagentStartHookInput", receivedInput)
+	}
+	if si.AgentID != "agent-explore-001" {
+		t.Errorf("input.AgentID = %q, want 'agent-explore-001'", si.AgentID)
+	}
+	if si.AgentType != "Explore" {
+		t.Errorf("input.AgentType = %q, want 'Explore'", si.AgentType)
+	}
+}
+
+func TestRunner_PostToolUseUpdatedMCPOutput(t *testing.T) {
+	// PostToolUse hook output can contain updatedMCPToolOutput
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPostToolUse: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{
+						HookSpecificOutput: &PostToolUseSpecificOutput{
+							HookEventName:        "PostToolUse",
+							UpdatedMCPToolOutput: map[string]any{"cleaned": true, "redacted_fields": []string{"password"}},
+						},
+					}}, nil
+				}}},
+			},
+		},
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventPostToolUse, &PostToolUseHookInput{
+		ToolName: "mcp__db__query",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	specific, ok := results[0].HookSpecificOutput.(*PostToolUseSpecificOutput)
+	if !ok {
+		t.Fatalf("HookSpecificOutput type = %T, want *PostToolUseSpecificOutput", results[0].HookSpecificOutput)
+	}
+	updatedOutput, ok := specific.UpdatedMCPToolOutput.(map[string]any)
+	if !ok {
+		t.Fatalf("UpdatedMCPToolOutput type = %T, want map[string]any", specific.UpdatedMCPToolOutput)
+	}
+	if updatedOutput["cleaned"] != true {
+		t.Errorf("cleaned = %v, want true", updatedOutput["cleaned"])
+	}
+}
+
+func TestRunner_PermissionDecisionField(t *testing.T) {
+	// PreToolUse hook output can contain permissionDecision
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{
+						HookSpecificOutput: &PreToolUseSpecificOutput{
+							HookEventName:      "PreToolUse",
+							PermissionDecision: "allow",
+							PermissionDecisionReason: "whitelisted command",
+						},
+					}}, nil
+				}}},
+			},
+		},
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, &PreToolUseHookInput{
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "ls"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	specific, ok := results[0].HookSpecificOutput.(*PreToolUseSpecificOutput)
+	if !ok {
+		t.Fatalf("HookSpecificOutput type = %T, want *PreToolUseSpecificOutput", results[0].HookSpecificOutput)
+	}
+	if specific.PermissionDecision != "allow" {
+		t.Errorf("PermissionDecision = %q, want 'allow'", specific.PermissionDecision)
+	}
+	if specific.PermissionDecisionReason != "whitelisted command" {
+		t.Errorf("PermissionDecisionReason = %q, want 'whitelisted command'", specific.PermissionDecisionReason)
+	}
+}
+
 func TestConvertOutput_AsyncIgnored(t *testing.T) {
 	// When only Async is set, convertOutput returns empty result
 	result := convertOutput(HookJSONOutput{Async: &AsyncHookJSONOutput{Async: true}})

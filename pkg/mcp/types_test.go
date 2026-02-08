@@ -287,6 +287,125 @@ func TestMethodConstants(t *testing.T) {
 	}
 }
 
+// --- Test Parity: MCP Tool Annotations (ported from Python Agent SDK) ---
+
+func TestToolAnnotations_AllHints(t *testing.T) {
+	// Verify all annotation hints unmarshal correctly
+	raw := `{
+		"name": "database_write",
+		"description": "Write to database",
+		"inputSchema": {"type": "object"},
+		"annotations": {
+			"readOnly": false,
+			"destructive": true,
+			"openWorld": false
+		}
+	}`
+	var info ToolInfo
+	if err := json.Unmarshal([]byte(raw), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Annotations == nil {
+		t.Fatal("expected non-nil annotations")
+	}
+	if info.Annotations.ReadOnly == nil || *info.Annotations.ReadOnly != false {
+		t.Errorf("readOnly: got %v, want false", info.Annotations.ReadOnly)
+	}
+	if info.Annotations.Destructive == nil || *info.Annotations.Destructive != true {
+		t.Errorf("destructive: got %v, want true", info.Annotations.Destructive)
+	}
+	if info.Annotations.OpenWorld == nil || *info.Annotations.OpenWorld != false {
+		t.Errorf("openWorld: got %v, want false", info.Annotations.OpenWorld)
+	}
+}
+
+func TestToolAnnotationsInToolsList(t *testing.T) {
+	// Annotations should flow through a tools/list JSONRPC response correctly
+	raw := `{
+		"tools": [
+			{
+				"name": "safe_read",
+				"description": "Read-only operation",
+				"annotations": {"readOnly": true}
+			},
+			{
+				"name": "dangerous_write",
+				"description": "Destructive write",
+				"annotations": {"readOnly": false, "destructive": true}
+			},
+			{
+				"name": "no_annotations",
+				"description": "Plain tool"
+			}
+		]
+	}`
+	var result ToolsListResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(result.Tools))
+	}
+
+	// Tool 0: readOnly=true
+	if result.Tools[0].Annotations == nil {
+		t.Fatal("expected annotations on safe_read")
+	}
+	if result.Tools[0].Annotations.ReadOnly == nil || !*result.Tools[0].Annotations.ReadOnly {
+		t.Error("safe_read should have readOnly=true")
+	}
+
+	// Tool 1: readOnly=false, destructive=true
+	if result.Tools[1].Annotations == nil {
+		t.Fatal("expected annotations on dangerous_write")
+	}
+	if result.Tools[1].Annotations.Destructive == nil || !*result.Tools[1].Annotations.Destructive {
+		t.Error("dangerous_write should have destructive=true")
+	}
+
+	// Tool 2: no annotations
+	if result.Tools[2].Annotations != nil {
+		t.Error("no_annotations should have nil annotations")
+	}
+}
+
+func TestToolResult_ImageContentBlock(t *testing.T) {
+	// Tool results can contain image blocks with base64 data and mimeType
+	raw := `{
+		"content": [
+			{"type": "text", "text": "Here is the screenshot:"},
+			{"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}
+		],
+		"isError": false
+	}`
+	var result ToolResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(result.Content))
+	}
+
+	// Block 0: text
+	if result.Content[0].Type != "text" {
+		t.Errorf("block[0] type = %q, want text", result.Content[0].Type)
+	}
+	if result.Content[0].Text != "Here is the screenshot:" {
+		t.Errorf("block[0] text = %q", result.Content[0].Text)
+	}
+
+	// Block 1: image with base64 data
+	if result.Content[1].Type != "image" {
+		t.Errorf("block[1] type = %q, want image", result.Content[1].Type)
+	}
+	if result.Content[1].MimeType != "image/png" {
+		t.Errorf("block[1] mimeType = %q, want image/png", result.Content[1].MimeType)
+	}
+	if result.Content[1].Data == "" {
+		t.Error("block[1] data should not be empty")
+	}
+}
+
 func TestConnectionStatusValues(t *testing.T) {
 	statuses := []ConnectionStatus{
 		StatusConnected, StatusFailed, StatusNeedsAuth, StatusPending, StatusDisabled,

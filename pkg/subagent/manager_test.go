@@ -509,3 +509,9 @@ func TestManager_PermissionModeResolution(t *testing.T) {
 func TestManager_ImplementsSubagentSpawner(t *testing.T) {
 	var _ tools.SubagentSpawner = (*Manager)(nil)
 }
+
+// --- Stub Tests for Unimplemented Features ---
+
+func TestManager_LargeAgentDefinition(t *testing.T) {
+	t.Skip("not yet implemented: large agent definition handling (250KB+)")
+}

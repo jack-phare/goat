@@ -2,6 +2,7 @@ package permission
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/jg-phare/goat/pkg/agent"
@@ -481,6 +482,28 @@ func TestChecker_UserPrompter_DeniesAskTools(t *testing.T) {
 	result, _ := c.Check(context.Background(), "Bash", nil)
 	if result.Behavior != "deny" {
 		t.Errorf("behavior = %q, want deny (from prompter)", result.Behavior)
+	}
+}
+
+// --- Test Parity: Callback Error Handling (ported from Python Agent SDK) ---
+
+func TestChecker_CallbackError(t *testing.T) {
+	// When the canUseTool callback returns an error, it should be treated as no decision
+	// (falls through to mode default), not a crash.
+	c := NewChecker(CheckerConfig{
+		Mode: string(types.PermissionModeDefault),
+		CanUseTool: func(toolName string, input map[string]any) (*types.PermissionResult, error) {
+			return nil, fmt.Errorf("callback crashed: database unavailable")
+		},
+	})
+
+	// Bash is high risk → mode default → "ask" → denied (headless)
+	result, err := c.Check(context.Background(), "Bash", nil)
+	if err != nil {
+		t.Fatalf("Check should not return error (callback error is isolated): %v", err)
+	}
+	if result.Behavior != "deny" {
+		t.Errorf("behavior = %q, want deny (headless fallback after callback error)", result.Behavior)
 	}
 }
 
