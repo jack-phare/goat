@@ -20,7 +20,7 @@ func (s *StaticPromptAssembler) Assemble(_ *AgentConfig) string {
 type AllowAllChecker struct{}
 
 func (a *AllowAllChecker) Check(_ context.Context, _ string, _ map[string]any) (PermissionResult, error) {
-	return PermissionResult{Allowed: true}, nil
+	return PermissionResult{Behavior: "allow"}, nil
 }
 
 // NoOpHookRunner does nothing and returns empty results.

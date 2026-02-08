@@ -177,11 +177,16 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			}
 
 			// Execute tools
-			toolResults := executeTools(ctx, toolBlocks, config, state, ch)
+			toolResults, interrupted := executeTools(ctx, toolBlocks, config, state, ch)
 
 			// Append tool results as messages
 			toolMsgs := llm.ConvertToToolMessages(toolResults)
 			state.Messages = append(state.Messages, toolMsgs...)
+
+			if interrupted {
+				state.ExitReason = ExitInterrupted
+				goto done
+			}
 
 			continue
 

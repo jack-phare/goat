@@ -54,6 +54,12 @@ type AgentConfig struct {
 	// MCP
 	MCPServers map[string]types.McpServerConfig
 
+	// Permission configuration
+	AllowedTools                    []string
+	DisallowedTools                 []string
+	AllowDangerouslySkipPermissions bool
+	CanUseTool                      types.CanUseToolFunc
+
 	// Agent identity
 	AgentType string // "" for main agent, "explore", "plan", "task", etc.
 

@@ -101,6 +101,26 @@ func WithAgentType(agentType string) Option {
 	return func(c *AgentConfig) { c.AgentType = agentType }
 }
 
+// WithAllowedTools sets tool names that are auto-allowed (no permission prompt).
+func WithAllowedTools(names ...string) Option {
+	return func(c *AgentConfig) { c.AllowedTools = names }
+}
+
+// WithDisallowedTools sets tool names that are explicitly disabled.
+func WithDisallowedTools(names ...string) Option {
+	return func(c *AgentConfig) { c.DisallowedTools = names }
+}
+
+// WithCanUseTool sets the custom permission callback.
+func WithCanUseTool(fn types.CanUseToolFunc) Option {
+	return func(c *AgentConfig) { c.CanUseTool = fn }
+}
+
+// WithAllowDangerouslySkipPermissions enables bypassPermissions mode.
+func WithAllowDangerouslySkipPermissions(allow bool) Option {
+	return func(c *AgentConfig) { c.AllowDangerouslySkipPermissions = allow }
+}
+
 // New creates a fully wired AgentConfig with sensible defaults.
 func New(llmClient llm.Client, registry *tools.Registry, opts ...Option) AgentConfig {
 	config := DefaultConfig()

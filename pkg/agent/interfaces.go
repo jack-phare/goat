@@ -19,9 +19,12 @@ type PermissionChecker interface {
 
 // PermissionResult is the outcome of a permission check.
 type PermissionResult struct {
-	Allowed      bool
-	DenyMessage  string
-	UpdatedInput map[string]any // nil if unchanged
+	Behavior           string             // "allow"|"deny"|"ask"
+	UpdatedInput       map[string]any     // nil if unchanged
+	UpdatedPermissions []types.PermissionUpdate // rule changes to persist
+	Message            string             // deny reason
+	Interrupt          bool               // stop the loop entirely
+	ToolUseID          string             // for correlation
 }
 
 // HookRunner fires lifecycle hooks.

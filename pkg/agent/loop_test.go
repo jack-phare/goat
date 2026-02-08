@@ -542,7 +542,7 @@ func TestLoop_ToolPermissionDenied(t *testing.T) {
 type denyAllChecker struct{}
 
 func (d *denyAllChecker) Check(_ context.Context, _ string, _ map[string]any) (PermissionResult, error) {
-	return PermissionResult{Allowed: false, DenyMessage: "permission denied by test"}, nil
+	return PermissionResult{Behavior: "deny", Message: "permission denied by test"}, nil
 }
 
 func TestLoop_StreamEvents(t *testing.T) {
@@ -781,6 +781,96 @@ func TestLoop_UnknownTool_MCPPrefix(t *testing.T) {
 	if q.TurnCount() != 2 {
 		t.Errorf("turn count = %d, want 2", q.TurnCount())
 	}
+}
+
+func TestLoop_PermissionInterrupt(t *testing.T) {
+	// Permission check with Interrupt=true should stop the loop
+	mockTool := &mockRecordingTool{
+		name:   "Bash",
+		output: tools.ToolOutput{Content: "should not see this"},
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "rm -rf /"}),
+			endTurnResponse("This should not be reached."),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.Permissions = &interruptChecker{}
+
+	q := RunLoop(context.Background(), "Delete everything", config)
+	collectMessages(q)
+	q.Wait()
+
+	// Tool should NOT have been executed
+	if mockTool.CallCount() != 0 {
+		t.Errorf("tool should not have been called, but was called %d times", mockTool.CallCount())
+	}
+
+	// Loop should have been interrupted
+	if q.GetExitReason() != ExitInterrupted {
+		t.Errorf("exit reason = %s, want interrupted", q.GetExitReason())
+	}
+}
+
+type interruptChecker struct{}
+
+func (ic *interruptChecker) Check(_ context.Context, _ string, _ map[string]any) (PermissionResult, error) {
+	return PermissionResult{
+		Behavior:  "deny",
+		Message:   "interrupted by permission check",
+		Interrupt: true,
+	}, nil
+}
+
+func TestLoop_PermissionUpdatedInput(t *testing.T) {
+	// Permission check modifies input before tool execution
+	mockTool := &mockRecordingTool{
+		name:   "Bash",
+		output: tools.ToolOutput{Content: "safe output"},
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "dangerous-cmd"}),
+			endTurnResponse("Done."),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.Permissions = &inputRewriteChecker{}
+
+	q := RunLoop(context.Background(), "Run something", config)
+	collectMessages(q)
+	q.Wait()
+
+	if mockTool.CallCount() != 1 {
+		t.Fatalf("tool call count = %d, want 1", mockTool.CallCount())
+	}
+
+	// Verify the tool received the rewritten input
+	mockTool.mu.Lock()
+	callInput := mockTool.calls[0]
+	mockTool.mu.Unlock()
+
+	if callInput["command"] != "safe-cmd" {
+		t.Errorf("tool received command = %q, want 'safe-cmd'", callInput["command"])
+	}
+}
+
+type inputRewriteChecker struct{}
+
+func (ic *inputRewriteChecker) Check(_ context.Context, _ string, _ map[string]any) (PermissionResult, error) {
+	return PermissionResult{
+		Behavior:     "allow",
+		UpdatedInput: map[string]any{"command": "safe-cmd"},
+	}, nil
 }
 
 func TestLoop_CostTracking(t *testing.T) {
