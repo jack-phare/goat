@@ -47,7 +47,21 @@ func (m *MCPTool) Execute(ctx context.Context, input map[string]any) (ToolOutput
 		}, nil
 	}
 
-	return ToolOutput{Content: result}, nil
+	// Concatenate text content blocks
+	var b strings.Builder
+	for _, block := range result.Content {
+		if block.Type == "text" && block.Text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(block.Text)
+		}
+	}
+
+	return ToolOutput{
+		Content: b.String(),
+		IsError: result.IsError,
+	}, nil
 }
 
 // RegisterMCPTool adds a dynamic MCP tool to the registry.

@@ -14,11 +14,34 @@ type MCPResource struct {
 	MimeType    string
 }
 
+// MCPToolCallResult is the structured result of calling an MCP tool.
+type MCPToolCallResult struct {
+	Content []MCPContentBlock
+	IsError bool
+}
+
+// MCPContentBlock is a single content item in an MCP tool result or resource.
+type MCPContentBlock struct {
+	Type     string // "text", "image", "resource"
+	Text     string
+	MimeType string
+	Data     string // base64 for images
+	URI      string // for embedded resources
+}
+
+// MCPResourceContent is the structured result of reading an MCP resource.
+type MCPResourceContent struct {
+	URI      string
+	MimeType string
+	Text     string
+	Blob     string // base64 for binary
+}
+
 // MCPClient communicates with MCP servers.
 type MCPClient interface {
 	ListResources(ctx context.Context, serverName string) ([]MCPResource, error)
-	ReadResource(ctx context.Context, serverName, uri string) (string, error)
-	CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (string, error)
+	ReadResource(ctx context.Context, serverName, uri string) (MCPResourceContent, error)
+	CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (MCPToolCallResult, error)
 }
 
 // StubMCPClient returns a not-configured message for all operations.
@@ -28,12 +51,12 @@ func (s *StubMCPClient) ListResources(_ context.Context, _ string) ([]MCPResourc
 	return nil, fmt.Errorf("MCP not configured")
 }
 
-func (s *StubMCPClient) ReadResource(_ context.Context, _, _ string) (string, error) {
-	return "", fmt.Errorf("MCP not configured")
+func (s *StubMCPClient) ReadResource(_ context.Context, _, _ string) (MCPResourceContent, error) {
+	return MCPResourceContent{}, fmt.Errorf("MCP not configured")
 }
 
-func (s *StubMCPClient) CallTool(_ context.Context, _, _ string, _ map[string]any) (string, error) {
-	return "", fmt.Errorf("MCP not configured")
+func (s *StubMCPClient) CallTool(_ context.Context, _, _ string, _ map[string]any) (MCPToolCallResult, error) {
+	return MCPToolCallResult{}, fmt.Errorf("MCP not configured")
 }
 
 // ListMcpResourcesTool lists resources from MCP servers.
@@ -144,5 +167,11 @@ func (r *ReadMcpResourceTool) Execute(ctx context.Context, input map[string]any)
 		}, nil
 	}
 
-	return ToolOutput{Content: content}, nil
+	if content.Text != "" {
+		return ToolOutput{Content: content.Text}, nil
+	}
+	if content.Blob != "" {
+		return ToolOutput{Content: fmt.Sprintf("[binary data: %s, %d bytes]", content.MimeType, len(content.Blob))}, nil
+	}
+	return ToolOutput{Content: ""}, nil
 }

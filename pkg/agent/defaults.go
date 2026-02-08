@@ -7,7 +7,8 @@ import (
 )
 
 // DefaultRegistry creates a Registry with all tools configured for the given working directory.
-func DefaultRegistry(cwd string) *tools.Registry {
+// mcpClient may be nil; MCP resource tools will fall back to a stub that returns "not configured".
+func DefaultRegistry(cwd string, mcpClient tools.MCPClient) *tools.Registry {
 	tm := tools.NewTaskManager()
 
 	registry := tools.NewRegistry(
@@ -40,10 +41,10 @@ func DefaultRegistry(cwd string) *tools.Registry {
 	// Subagent
 	registry.Register(&tools.AgentTool{}) // Spawner set by host app
 
-	// MCP (stub until Spec 10)
-	registry.Register(&tools.ListMcpResourcesTool{})
-	registry.Register(&tools.ReadMcpResourceTool{})
-	// Dynamic mcp__* tools registered at runtime via RegisterMCPTool
+	// MCP resource tools (mcpClient may be nil → falls back to StubMCPClient)
+	registry.Register(&tools.ListMcpResourcesTool{Client: mcpClient})
+	registry.Register(&tools.ReadMcpResourceTool{Client: mcpClient})
+	// Dynamic mcp__* tools registered at runtime by mcp.Client.Connect()
 
 	// NotebookEdit
 	registry.Register(&tools.NotebookEditTool{})

@@ -7,21 +7,22 @@ import (
 )
 
 type mockMCPClient struct {
-	resources []MCPResource
-	content   string
-	err       error
+	resources       []MCPResource
+	resourceContent MCPResourceContent
+	toolResult      MCPToolCallResult
+	err             error
 }
 
 func (m *mockMCPClient) ListResources(_ context.Context, _ string) ([]MCPResource, error) {
 	return m.resources, m.err
 }
 
-func (m *mockMCPClient) ReadResource(_ context.Context, _, _ string) (string, error) {
-	return m.content, m.err
+func (m *mockMCPClient) ReadResource(_ context.Context, _, _ string) (MCPResourceContent, error) {
+	return m.resourceContent, m.err
 }
 
-func (m *mockMCPClient) CallTool(_ context.Context, _, _ string, _ map[string]any) (string, error) {
-	return m.content, m.err
+func (m *mockMCPClient) CallTool(_ context.Context, _, _ string, _ map[string]any) (MCPToolCallResult, error) {
+	return m.toolResult, m.err
 }
 
 func TestMCP_ListResources(t *testing.T) {
@@ -58,7 +59,10 @@ func TestMCP_ListResourcesStub(t *testing.T) {
 }
 
 func TestMCP_ReadResource(t *testing.T) {
-	client := &mockMCPClient{content: "# Hello World"}
+	client := &mockMCPClient{resourceContent: MCPResourceContent{
+		URI:  "file:///readme.md",
+		Text: "# Hello World",
+	}}
 	tool := &ReadMcpResourceTool{Client: client}
 	out, err := tool.Execute(context.Background(), map[string]any{
 		"server_name": "test-server",

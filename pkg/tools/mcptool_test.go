@@ -7,7 +7,9 @@ import (
 
 func TestMCPTool_Registration(t *testing.T) {
 	registry := NewRegistry()
-	client := &mockMCPClient{content: "tool output"}
+	client := &mockMCPClient{toolResult: MCPToolCallResult{
+		Content: []MCPContentBlock{{Type: "text", Text: "tool output"}},
+	}}
 
 	registry.RegisterMCPTool("myserver", "search", "Search for things", map[string]any{
 		"type": "object",
@@ -26,7 +28,9 @@ func TestMCPTool_Registration(t *testing.T) {
 }
 
 func TestMCPTool_Execution(t *testing.T) {
-	client := &mockMCPClient{content: "search results"}
+	client := &mockMCPClient{toolResult: MCPToolCallResult{
+		Content: []MCPContentBlock{{Type: "text", Text: "search results"}},
+	}}
 	tool := &MCPTool{
 		ServerName: "srv",
 		ToolName:   "search",
@@ -112,7 +116,7 @@ func TestMCPTool_SideEffect(t *testing.T) {
 }
 
 func TestMCPTool_EmptyResult(t *testing.T) {
-	client := &mockMCPClient{content: ""}
+	client := &mockMCPClient{toolResult: MCPToolCallResult{}}
 	tool := &MCPTool{ServerName: "s", ToolName: "t", Client: client}
 	out, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
