@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-text1","object":"chat.completion.chunk","created":1700000000,"model":"anthropic/claude-opus-4-5-20250514","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-text1","object":"chat.completion.chunk","created":1700000000,"model":"anthropic/claude-opus-4-5-20250514","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-text1","object":"chat.completion.chunk","created":1700000000,"model":"anthropic/claude-opus-4-5-20250514","choices":[{"index":0,"delta":{"content":", world!"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-text1","object":"chat.completion.chunk","created":1700000000,"model":"anthropic/claude-opus-4-5-20250514","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-text1","object":"chat.completion.chunk","created":1700000000,"model":"anthropic/claude-opus-4-5-20250514","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"cache_read_input_tokens":50,"cache_creation_input_tokens":0}}
+
+data: [DONE]

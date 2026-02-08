@@ -1,0 +1,20 @@
+{
+  "id": "chatcmpl-text1",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Hello, world!"
+    }
+  ],
+  "model": "claude-opus-4-5-20250514",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 10,
+    "cache_read_input_tokens": 50,
+    "cache_creation_input_tokens": 0
+  }
+}

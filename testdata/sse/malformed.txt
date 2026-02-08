@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-mal1","object":"chat.completion.chunk","created":1234,"model":"claude","choices":[{"index":0,"delta":{"content":"before"},"finish_reason":null}]}
+
+data: {this is not valid json at all}
+
+data: {"truncated json
+
+data: {"id":"chatcmpl-mal1","object":"chat.completion.chunk","created":1234,"model":"claude","choices":[{"index":0,"delta":{"content":" after"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-mal1","object":"chat.completion.chunk","created":1234,"model":"claude","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]

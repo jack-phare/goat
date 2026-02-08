@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-think1",
+  "model": "anthropic/claude-opus-4-5-20250514",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Let me analyze this problem carefully."
+    },
+    {
+      "type": "text",
+      "text": "Based on my analysis, I'll run a command."
+    },
+    {
+      "type": "tool_use",
+      "id": "call_think1",
+      "name": "Bash",
+      "input": {
+        "command": "echo hello"
+      }
+    }
+  ],
+  "finish_reason": "tool_calls",
+  "stop_reason": "tool_use",
+  "usage": {
+    "input_tokens": 500,
+    "output_tokens": 150,
+    "cache_read_input_tokens": 100,
+    "cache_creation_input_tokens": 25
+  }
+}

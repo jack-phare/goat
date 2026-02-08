@@ -1,0 +1,39 @@
+{
+  "id": "chatcmpl-tools1",
+  "model": "anthropic/claude-opus-4-5-20250514",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "call_abc123",
+      "name": "Bash",
+      "input": {
+        "command": "ls -la"
+      }
+    },
+    {
+      "type": "tool_use",
+      "id": "call_def456",
+      "name": "Read",
+      "input": {
+        "path": "main.go"
+      }
+    },
+    {
+      "type": "tool_use",
+      "id": "call_ghi789",
+      "name": "Write",
+      "input": {
+        "content": "package main",
+        "path": "test.go"
+      }
+    }
+  ],
+  "finish_reason": "tool_calls",
+  "stop_reason": "tool_use",
+  "usage": {
+    "input_tokens": 200,
+    "output_tokens": 80,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0
+  }
+}

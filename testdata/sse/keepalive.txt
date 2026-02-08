@@ -1,0 +1,17 @@
+: keepalive
+
+: ping
+
+data: {"id":"chatcmpl-ka1","object":"chat.completion.chunk","created":1234,"model":"claude","choices":[{"index":0,"delta":{"content":"alive"},"finish_reason":null}]}
+
+: another ping
+
+: and another
+
+data: {"id":"chatcmpl-ka1","object":"chat.completion.chunk","created":1234,"model":"claude","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-ka1","object":"chat.completion.chunk","created":1234,"model":"claude","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
+
+: final ping
+
+data: [DONE]
