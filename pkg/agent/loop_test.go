@@ -1152,3 +1152,212 @@ func TestLoop_HookEventSequence(t *testing.T) {
 		}
 	}
 }
+
+// --- Compaction Integration Tests ---
+
+// mockCompactor implements ContextCompactor for testing.
+type mockCompactor struct {
+	mu            sync.Mutex
+	shouldCompact bool
+	compactCalls  int
+	compactErr    error
+}
+
+func (m *mockCompactor) ShouldCompact(_ TokenBudget) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.shouldCompact
+}
+
+func (m *mockCompactor) Compact(_ context.Context, req CompactRequest) ([]llm.ChatMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.compactCalls++
+	if m.compactErr != nil {
+		return nil, m.compactErr
+	}
+	// Simulate compaction: keep only the last message
+	if len(req.Messages) > 1 {
+		summary := llm.ChatMessage{
+			Role:    "user",
+			Content: "[Summary of earlier conversation]",
+		}
+		return append([]llm.ChatMessage{summary}, req.Messages[len(req.Messages)-1]), nil
+	}
+	return req.Messages, nil
+}
+
+func (m *mockCompactor) CompactCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.compactCalls
+}
+
+func TestLoop_ProactiveCompaction(t *testing.T) {
+	compactor := &mockCompactor{shouldCompact: true}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			endTurnResponse("Hello after compaction!"),
+		},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.Compactor = compactor
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+
+	// Proactive compaction should have fired before the LLM call
+	if compactor.CompactCallCount() < 1 {
+		t.Error("expected compaction to fire proactively")
+	}
+}
+
+func TestLoop_ReactiveCompaction_MaxTokens(t *testing.T) {
+	compactor := &mockCompactor{shouldCompact: true}
+
+	length := "length"
+	maxTokensResponse := &mockStream{
+		chunks: []llm.StreamChunk{
+			textChunk("msg-1", "claude-sonnet-4-5-20250929", "Partial output..."),
+			{
+				ID:    "msg-1",
+				Model: "claude-sonnet-4-5-20250929",
+				Choices: []llm.Choice{
+					{FinishReason: &length},
+				},
+				Usage: &llm.Usage{PromptTokens: 100000, CompletionTokens: 16384, TotalTokens: 116384},
+			},
+		},
+	}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			maxTokensResponse,
+			endTurnResponse("Completed after compaction"),
+		},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.Compactor = compactor
+
+	q := RunLoop(context.Background(), "Generate a long response", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+
+	// Compaction should have been called (both proactive and reactive)
+	if compactor.CompactCallCount() < 1 {
+		t.Error("expected compaction to fire on max_tokens")
+	}
+}
+
+func TestLoop_CompactionFailure_GracefulDegradation(t *testing.T) {
+	compactor := &mockCompactor{
+		shouldCompact: false, // proactive won't trigger
+	}
+
+	length := "length"
+	maxTokensResponse := &mockStream{
+		chunks: []llm.StreamChunk{
+			textChunk("msg-1", "claude-sonnet-4-5-20250929", "Partial..."),
+			{
+				ID:    "msg-1",
+				Model: "claude-sonnet-4-5-20250929",
+				Choices: []llm.Choice{
+					{FinishReason: &length},
+				},
+				Usage: &llm.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			},
+		},
+	}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{maxTokensResponse},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.Compactor = compactor
+
+	q := RunLoop(context.Background(), "Test", config)
+	collectMessages(q)
+	q.Wait()
+
+	// When compactor says no, loop should exit with max_tokens
+	if q.GetExitReason() != ExitMaxTokens {
+		t.Errorf("exit reason = %s, want max_tokens", q.GetExitReason())
+	}
+}
+
+func TestLoop_MultipleCompactions(t *testing.T) {
+	callCount := 0
+	compactor := &mockCompactor{shouldCompact: true}
+
+	// Override Compact to track calls and always compact
+	_ = compactor // use the struct
+
+	// Create a custom compactor that tracks call count
+	multiCompactor := &countingCompactor{shouldCompact: true}
+
+	mockTool := &mockRecordingTool{name: "Bash", output: tools.ToolOutput{Content: "ok"}}
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "ls"}),
+			toolUseResponse("call_2", "Bash", map[string]any{"command": "ls"}),
+			endTurnResponse("Done!"),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.Compactor = multiCompactor
+
+	q := RunLoop(context.Background(), "Do stuff", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+
+	// Multiple compactions should have occurred (one per loop iteration)
+	multiCompactor.mu.Lock()
+	count := multiCompactor.compactCalls
+	multiCompactor.mu.Unlock()
+	_ = callCount
+
+	if count < 2 {
+		t.Errorf("expected >= 2 compaction calls, got %d", count)
+	}
+}
+
+// countingCompactor counts calls but always returns messages as-is.
+type countingCompactor struct {
+	mu            sync.Mutex
+	shouldCompact bool
+	compactCalls  int
+}
+
+func (c *countingCompactor) ShouldCompact(_ TokenBudget) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shouldCompact
+}
+
+func (c *countingCompactor) Compact(_ context.Context, req CompactRequest) ([]llm.ChatMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.compactCalls++
+	// Don't actually compact — just count the calls
+	return req.Messages, nil
+}

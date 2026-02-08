@@ -33,10 +33,10 @@ func (n *NoOpHookRunner) Fire(_ context.Context, _ types.HookEvent, _ any) ([]Ho
 // NoOpCompactor never compacts.
 type NoOpCompactor struct{}
 
-func (n *NoOpCompactor) ShouldCompact(_ []llm.ChatMessage, _ string) bool {
+func (n *NoOpCompactor) ShouldCompact(_ TokenBudget) bool {
 	return false
 }
 
-func (n *NoOpCompactor) Compact(_ context.Context, msgs []llm.ChatMessage) ([]llm.ChatMessage, error) {
-	return msgs, nil
+func (n *NoOpCompactor) Compact(_ context.Context, req CompactRequest) ([]llm.ChatMessage, error) {
+	return req.Messages, nil
 }

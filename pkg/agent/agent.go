@@ -39,6 +39,11 @@ func WithHooks(runner HookRunner) Option {
 	return func(c *AgentConfig) { c.Hooks = runner }
 }
 
+// WithCompactor sets the context compactor.
+func WithCompactor(compactor ContextCompactor) Option {
+	return func(c *AgentConfig) { c.Compactor = compactor }
+}
+
 // WithSystemPrompt sets a custom system prompt string.
 func WithSystemPrompt(prompt string) Option {
 	return func(c *AgentConfig) {

@@ -67,6 +67,23 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			break
 		}
 
+		// 5.5 Proactive compaction check
+		budget := calculateTokenBudget(config, state, systemPrompt)
+		if config.Compactor.ShouldCompact(budget) {
+			compacted, err := config.Compactor.Compact(ctx, CompactRequest{
+				Messages:  state.Messages,
+				Model:     config.Model,
+				Budget:    budget,
+				Trigger:   "auto",
+				SessionID: state.SessionID,
+				EmitCh:    ch,
+			})
+			if err == nil {
+				state.Messages = compacted
+			}
+			// On error, continue with uncompacted messages
+		}
+
 		// 6. Build completion request (inject pending additional context)
 		var llmTools []llm.Tool
 		if config.ToolRegistry != nil {
@@ -168,8 +185,16 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 
 		case "max_tokens":
 			// Check if compaction can help
-			if config.Compactor.ShouldCompact(state.Messages, config.Model) {
-				compacted, err := config.Compactor.Compact(ctx, state.Messages)
+			budget := calculateTokenBudget(config, state, systemPrompt)
+			if config.Compactor.ShouldCompact(budget) {
+				compacted, err := config.Compactor.Compact(ctx, CompactRequest{
+					Messages:  state.Messages,
+					Model:     config.Model,
+					Budget:    budget,
+					Trigger:   "auto",
+					SessionID: state.SessionID,
+					EmitCh:    ch,
+				})
 				if err == nil {
 					state.Messages = compacted
 					continue
@@ -262,4 +287,36 @@ func checkTermination(ctx context.Context, config *AgentConfig, state *LoopState
 	}
 
 	return "" // no termination
+}
+
+// calculateTokenBudget estimates the current token budget for context management.
+func calculateTokenBudget(config *AgentConfig, state *LoopState, systemPrompt string) TokenBudget {
+	// Estimate message tokens using the simple len/4 heuristic
+	msgTokens := 0
+	for _, msg := range state.Messages {
+		msgTokens += estimateMessageTokens(msg)
+	}
+	sysTokens := len(systemPrompt) / 4
+
+	contextLimit := 200_000 // default for Claude models
+	return TokenBudget{
+		ContextLimit:     contextLimit,
+		SystemPromptTkns: sysTokens,
+		MaxOutputTkns:    16384,
+		MessageTkns:      msgTokens,
+	}
+}
+
+// estimateMessageTokens estimates the token count for a single message.
+func estimateMessageTokens(msg llm.ChatMessage) int {
+	overhead := 4 // role + separators
+	switch c := msg.Content.(type) {
+	case string:
+		return len(c)/4 + overhead
+	case nil:
+		return overhead
+	default:
+		// For complex content ([]ContentPart etc), use a rough estimate
+		return overhead
+	}
 }
