@@ -67,6 +67,10 @@ type AgentConfig struct {
 	BackgroundMode    bool // auto-deny unpermitted tools, disable AskUser, no MCP
 	CanSpawnSubagents bool // false = Agent tool filtered from registry
 
+	// Team context (set when running as a teammate)
+	TeamName  string // non-empty when part of a team
+	AgentName string // this agent's name within the team
+
 	// Prompt version
 	PromptVersion string // e.g., "2.1.37"
 

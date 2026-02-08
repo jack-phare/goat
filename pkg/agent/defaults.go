@@ -1,8 +1,12 @@
 package agent
 
-import "github.com/jg-phare/goat/pkg/tools"
+import (
+	"os"
 
-// DefaultRegistry creates a Registry with all 19 tools configured for the given working directory.
+	"github.com/jg-phare/goat/pkg/tools"
+)
+
+// DefaultRegistry creates a Registry with all tools configured for the given working directory.
 func DefaultRegistry(cwd string) *tools.Registry {
 	tm := tools.NewTaskManager()
 
@@ -43,6 +47,13 @@ func DefaultRegistry(cwd string) *tools.Registry {
 
 	// NotebookEdit
 	registry.Register(&tools.NotebookEditTool{})
+
+	// Team tools (feature-gated)
+	if os.Getenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS") == "1" {
+		registry.Register(&tools.TeamCreateTool{})   // Coordinator set by host app
+		registry.Register(&tools.SendMessageTool{})   // Coordinator set by host app
+		registry.Register(&tools.TeamDeleteTool{})     // Coordinator set by host app
+	}
 
 	return registry
 }
