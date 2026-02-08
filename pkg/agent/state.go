@@ -26,6 +26,10 @@ type LoopState struct {
 	TotalCostUSD  float64
 	IsInterrupted bool
 	ExitReason    ExitReason
+
+	// PendingAdditionalContext collects context from hooks to inject
+	// into the system prompt on the next LLM call.
+	PendingAdditionalContext []string
 }
 
 // addUsage accumulates token usage from an LLM response.

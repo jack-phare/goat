@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,10 +42,11 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 	startTime := time.Now()
 	var apiDuration time.Duration
 
-	// 1. Fire SessionStart hook
-	config.Hooks.Fire(ctx, types.HookEventSessionStart, map[string]any{
+	// 1. Fire SessionStart hook and collect additional context
+	sessionStartResults, _ := config.Hooks.Fire(ctx, types.HookEventSessionStart, map[string]any{
 		"source": "startup",
 	})
+	collectAdditionalContext(state, sessionStartResults)
 
 	// 2. Emit system init message
 	emitInit(ch, config, state)
@@ -65,10 +67,16 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			break
 		}
 
-		// 6. Build completion request
+		// 6. Build completion request (inject pending additional context)
 		var llmTools []llm.Tool
 		if config.ToolRegistry != nil {
 			llmTools = config.ToolRegistry.LLMTools()
+		}
+
+		effectivePrompt := systemPrompt
+		if len(state.PendingAdditionalContext) > 0 {
+			effectivePrompt = systemPrompt + "\n\n" + strings.Join(state.PendingAdditionalContext, "\n")
+			state.PendingAdditionalContext = nil // clear after consumption
 		}
 
 		req := llm.BuildCompletionRequest(
@@ -77,7 +85,7 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 				MaxTokens:         16384,
 				MaxThinkingTokens: 0,
 			},
-			systemPrompt,
+			effectivePrompt,
 			state.Messages,
 			llmTools,
 			llm.LoopState{SessionID: state.SessionID},
@@ -149,9 +157,13 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 		// 11. Check stop reason
 		switch resp.StopReason {
 		case "end_turn":
+			// Fire Stop hook and check if any hook wants to continue
+			stopResults, _ := config.Hooks.Fire(ctx, types.HookEventStop, nil)
+			if shouldContinue(stopResults) {
+				collectAdditionalContext(state, stopResults)
+				continue
+			}
 			state.ExitReason = ExitEndTurn
-			// Fire Stop hook
-			config.Hooks.Fire(ctx, types.HookEventStop, nil)
 			goto done
 
 		case "max_tokens":
@@ -205,6 +217,26 @@ done:
 	config.Hooks.Fire(ctx, types.HookEventSessionEnd, map[string]any{
 		"reason": string(state.ExitReason),
 	})
+}
+
+// shouldContinue checks if any hook result has Continue=true.
+func shouldContinue(results []HookResult) bool {
+	for _, r := range results {
+		if r.Continue != nil && *r.Continue {
+			return true
+		}
+	}
+	return false
+}
+
+// collectAdditionalContext extracts additional context from hook results
+// and appends it to the loop state's pending context.
+func collectAdditionalContext(state *LoopState, results []HookResult) {
+	for _, r := range results {
+		if r.SystemMessage != "" {
+			state.PendingAdditionalContext = append(state.PendingAdditionalContext, r.SystemMessage)
+		}
+	}
 }
 
 // checkTermination evaluates whether the loop should stop.

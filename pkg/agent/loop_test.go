@@ -901,3 +901,254 @@ func TestLoop_CostTracking(t *testing.T) {
 		t.Errorf("turn count = %d, want 2", q.TurnCount())
 	}
 }
+
+// --- Hook Integration Tests ---
+
+// mockHookRunner records hook firings and returns configurable results.
+type mockHookRunner struct {
+	mu      sync.Mutex
+	events  []types.HookEvent
+	results map[types.HookEvent][]HookResult
+}
+
+func (m *mockHookRunner) Fire(_ context.Context, event types.HookEvent, _ any) ([]HookResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, event)
+	if results, ok := m.results[event]; ok {
+		return results, nil
+	}
+	return nil, nil
+}
+
+func (m *mockHookRunner) firedEvents() []types.HookEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]types.HookEvent, len(m.events))
+	copy(out, m.events)
+	return out
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestLoop_StopHookContinue(t *testing.T) {
+	// Stop hook returns continue=true, so the loop should continue after end_turn
+	hooks := &mockHookRunner{
+		results: map[types.HookEvent][]HookResult{
+			types.HookEventStop: {
+				{Continue: boolPtr(true)},
+			},
+		},
+	}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			endTurnResponse("First response"),
+			endTurnResponse("Second response"),
+			endTurnResponse("Third response"),
+		},
+	}
+
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.Hooks = hooks
+	config.MaxTurns = 3
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	// Should have hit max turns (3) since stop hook keeps continuing
+	if q.GetExitReason() != ExitMaxTurns {
+		t.Errorf("exit reason = %s, want max_turns (stop hook causes continuation)", q.GetExitReason())
+	}
+
+	// Verify stop hook was fired multiple times
+	events := hooks.firedEvents()
+	stopCount := 0
+	for _, e := range events {
+		if e == types.HookEventStop {
+			stopCount++
+		}
+	}
+	if stopCount < 2 {
+		t.Errorf("stop hook fired %d times, want >= 2", stopCount)
+	}
+}
+
+func TestLoop_StopHookNoOverride(t *testing.T) {
+	// Stop hook returns nil/empty → loop should end normally
+	hooks := &mockHookRunner{
+		results: map[types.HookEvent][]HookResult{},
+	}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Done")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.Hooks = hooks
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+}
+
+func TestLoop_PreToolUseHookDeny(t *testing.T) {
+	hooks := &mockHookRunner{
+		results: map[types.HookEvent][]HookResult{
+			types.HookEventPreToolUse: {
+				{Decision: "deny", Message: "hook blocked this tool"},
+			},
+		},
+	}
+
+	mockTool := &mockRecordingTool{
+		name:   "Bash",
+		output: tools.ToolOutput{Content: "should not see this"},
+	}
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "rm -rf /"}),
+			endTurnResponse("I see the tool was denied."),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.Hooks = hooks
+
+	q := RunLoop(context.Background(), "Delete everything", config)
+	collectMessages(q)
+	q.Wait()
+
+	// Tool should NOT have been executed (hook denied it)
+	if mockTool.CallCount() != 0 {
+		t.Errorf("tool should not have been called (hook denied), but was called %d times", mockTool.CallCount())
+	}
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+}
+
+func TestLoop_HookAdditionalContext(t *testing.T) {
+	hooks := &mockHookRunner{
+		results: map[types.HookEvent][]HookResult{
+			types.HookEventSessionStart: {
+				{SystemMessage: "injected startup context"},
+			},
+		},
+	}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Hello!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.Hooks = hooks
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+
+	// Verify hook events were fired
+	events := hooks.firedEvents()
+	if len(events) < 2 {
+		t.Errorf("expected at least 2 hook events (SessionStart, Stop/SessionEnd), got %d", len(events))
+	}
+	if events[0] != types.HookEventSessionStart {
+		t.Errorf("first event = %s, want SessionStart", events[0])
+	}
+}
+
+func TestLoop_PostToolUseSuppressOutput(t *testing.T) {
+	hooks := &mockHookRunner{
+		results: map[types.HookEvent][]HookResult{
+			types.HookEventPostToolUse: {
+				{SuppressOutput: boolPtr(true)},
+			},
+		},
+	}
+
+	mockTool := &mockRecordingTool{
+		name:   "Bash",
+		output: tools.ToolOutput{Content: "sensitive output"},
+	}
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "ls"}),
+			endTurnResponse("Done."),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.Hooks = hooks
+
+	q := RunLoop(context.Background(), "Run ls", config)
+	collectMessages(q)
+	q.Wait()
+
+	// Tool should have been called
+	if mockTool.CallCount() != 1 {
+		t.Errorf("tool call count = %d, want 1", mockTool.CallCount())
+	}
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+}
+
+func TestLoop_HookEventSequence(t *testing.T) {
+	hooks := &mockHookRunner{
+		results: map[types.HookEvent][]HookResult{},
+	}
+
+	mockTool := &mockRecordingTool{name: "Bash", output: tools.ToolOutput{Content: "ok"}}
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "ls"}),
+			endTurnResponse("Done."),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.Hooks = hooks
+
+	q := RunLoop(context.Background(), "Do stuff", config)
+	collectMessages(q)
+	q.Wait()
+
+	events := hooks.firedEvents()
+
+	// Expected sequence: SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd
+	expectedOrder := []types.HookEvent{
+		types.HookEventSessionStart,
+		types.HookEventPreToolUse,
+		types.HookEventPostToolUse,
+		types.HookEventStop,
+		types.HookEventSessionEnd,
+	}
+
+	if len(events) != len(expectedOrder) {
+		t.Fatalf("expected %d events, got %d: %v", len(expectedOrder), len(events), events)
+	}
+
+	for i, expected := range expectedOrder {
+		if events[i] != expected {
+			t.Errorf("event[%d] = %s, want %s", i, events[i], expected)
+		}
+	}
+}

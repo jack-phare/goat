@@ -34,10 +34,14 @@ type HookRunner interface {
 
 // HookResult is the outcome of a hook invocation.
 type HookResult struct {
-	Decision      string // "allow"|"deny"|""
-	Message       string
-	Continue      *bool
-	SystemMessage string
+	Decision           string // "allow"|"deny"|""
+	Message            string
+	Continue           *bool
+	SystemMessage      string
+	SuppressOutput     *bool
+	StopReason         string
+	Reason             string
+	HookSpecificOutput any // typed per-event output
 }
 
 // ContextCompactor handles context overflow.
