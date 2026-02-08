@@ -82,6 +82,7 @@ type AgentConfig struct {
 	Hooks        HookRunner
 	Compactor    ContextCompactor
 	CostTracker  *llm.CostTracker
+	SessionStore SessionStore // nil = no persistence (default)
 }
 
 // DefaultConfig returns an AgentConfig with sensible defaults.

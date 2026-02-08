@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/jg-phare/goat/pkg/llm"
 	"github.com/jg-phare/goat/pkg/types"
@@ -89,4 +90,68 @@ type HookResult struct {
 type ContextCompactor interface {
 	ShouldCompact(budget TokenBudget) bool
 	Compact(ctx context.Context, req CompactRequest) ([]llm.ChatMessage, error)
+}
+
+// SessionStore manages session persistence.
+type SessionStore interface {
+	// Lifecycle
+	Create(meta SessionMetadata) error
+	Load(sessionID string) (*SessionState, error)
+	LoadLatest(cwd string) (*SessionState, error)
+	Delete(sessionID string) error
+	List() ([]SessionMetadata, error)
+	Fork(sourceID, newID string) (*SessionState, error)
+
+	// Message persistence (async-safe)
+	AppendMessage(sessionID string, entry MessageEntry) error
+	AppendSDKMessage(sessionID string, msg types.SDKMessage) error
+	LoadMessages(sessionID string) ([]MessageEntry, error)
+	LoadMessagesUpTo(sessionID string, messageUUID string) ([]MessageEntry, error)
+
+	// Metadata updates
+	UpdateMetadata(sessionID string, fn func(*SessionMetadata)) error
+
+	// Checkpoint management
+	CreateCheckpoint(sessionID, userMsgUUID string, filePaths []string) error
+	RewindFiles(sessionID, userMsgUUID string, dryRun bool) (*RewindFilesResult, error)
+
+	// Lifecycle
+	Close() error // flush async writer, close files
+}
+
+// SessionMetadata holds the identity and stats for a session.
+type SessionMetadata struct {
+	ID               string    `json:"id"`
+	CWD              string    `json:"cwd"`
+	Model            string    `json:"model"`
+	ParentSessionID  string    `json:"parent_session_id,omitempty"`
+	ForkPointUUID    string    `json:"fork_point_uuid,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	MessageCount     int       `json:"message_count"`
+	TurnCount        int       `json:"turn_count"`
+	TotalCostUSD     float64   `json:"total_cost_usd"`
+	LeafTitle        string    `json:"leaf_title,omitempty"`
+}
+
+// SessionState is the loaded form of a session: metadata + messages.
+type SessionState struct {
+	Metadata SessionMetadata
+	Messages []MessageEntry
+}
+
+// MessageEntry wraps a ChatMessage with a UUID and timestamp for JSONL persistence.
+type MessageEntry struct {
+	UUID      string          `json:"uuid"`
+	Timestamp time.Time       `json:"timestamp"`
+	Message   llm.ChatMessage `json:"message"`
+}
+
+// RewindFilesResult describes the outcome of a file rewind operation.
+type RewindFilesResult struct {
+	CanRewind    bool     `json:"can_rewind"`
+	Error        string   `json:"error,omitempty"`
+	FilesChanged []string `json:"files_changed,omitempty"`
+	Insertions   int      `json:"insertions"`
+	Deletions    int      `json:"deletions"`
 }

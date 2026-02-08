@@ -1361,3 +1361,511 @@ func (c *countingCompactor) Compact(_ context.Context, req CompactRequest) ([]ll
 	// Don't actually compact — just count the calls
 	return req.Messages, nil
 }
+
+// --- Session Store Integration Tests ---
+
+// mockSessionStore records calls to SessionStore methods.
+type mockSessionStore struct {
+	NoOpSessionStore
+	mu               sync.Mutex
+	createCalls      []SessionMetadata
+	appendCalls      []MessageEntry
+	appendSDKCalls   []types.SDKMessage
+	updateCalls      int
+	closeCalled      bool
+
+	// Configurable restore-related return values
+	loadFunc       func(string) (*SessionState, error)
+	loadLatestFunc func(string) (*SessionState, error)
+	forkFunc       func(string, string) (*SessionState, error)
+	loadUpToFunc   func(string, string) ([]MessageEntry, error)
+}
+
+func (m *mockSessionStore) Load(sessionID string) (*SessionState, error) {
+	if m.loadFunc != nil {
+		return m.loadFunc(sessionID)
+	}
+	return m.NoOpSessionStore.Load(sessionID)
+}
+
+func (m *mockSessionStore) LoadLatest(cwd string) (*SessionState, error) {
+	if m.loadLatestFunc != nil {
+		return m.loadLatestFunc(cwd)
+	}
+	return m.NoOpSessionStore.LoadLatest(cwd)
+}
+
+func (m *mockSessionStore) Fork(sourceID, newID string) (*SessionState, error) {
+	if m.forkFunc != nil {
+		return m.forkFunc(sourceID, newID)
+	}
+	return m.NoOpSessionStore.Fork(sourceID, newID)
+}
+
+func (m *mockSessionStore) LoadMessagesUpTo(sessionID, messageUUID string) ([]MessageEntry, error) {
+	if m.loadUpToFunc != nil {
+		return m.loadUpToFunc(sessionID, messageUUID)
+	}
+	return m.NoOpSessionStore.LoadMessagesUpTo(sessionID, messageUUID)
+}
+
+func (m *mockSessionStore) Create(meta SessionMetadata) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createCalls = append(m.createCalls, meta)
+	return nil
+}
+
+func (m *mockSessionStore) AppendMessage(_ string, entry MessageEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appendCalls = append(m.appendCalls, entry)
+	return nil
+}
+
+func (m *mockSessionStore) AppendSDKMessage(_ string, msg types.SDKMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appendSDKCalls = append(m.appendSDKCalls, msg)
+	return nil
+}
+
+func (m *mockSessionStore) UpdateMetadata(_ string, fn func(*SessionMetadata)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updateCalls++
+	meta := SessionMetadata{}
+	fn(&meta)
+	return nil
+}
+
+func (m *mockSessionStore) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closeCalled = true
+	return nil
+}
+
+func (m *mockSessionStore) getAppendCalls() []MessageEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MessageEntry, len(m.appendCalls))
+	copy(out, m.appendCalls)
+	return out
+}
+
+func (m *mockSessionStore) getUpdateCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.updateCalls
+}
+
+func TestLoop_SessionStore_MessagesPersisted(t *testing.T) {
+	store := &mockSessionStore{}
+
+	mockTool := &mockRecordingTool{name: "Bash", output: tools.ToolOutput{Content: "ok"}}
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "ls"}),
+			endTurnResponse("Done."),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.SessionStore = store
+
+	q := RunLoop(context.Background(), "Do stuff", config)
+	collectMessages(q)
+	q.Wait()
+
+	calls := store.getAppendCalls()
+
+	// Should have: user (initial), assistant (turn 1), tool result, assistant (turn 2)
+	if len(calls) < 3 {
+		t.Fatalf("expected at least 3 persisted messages, got %d", len(calls))
+	}
+
+	// First should be user message
+	if calls[0].Message.Role != "user" {
+		t.Errorf("first persisted message role = %q, want user", calls[0].Message.Role)
+	}
+
+	// Should have assistant messages
+	hasAssistant := false
+	for _, c := range calls {
+		if c.Message.Role == "assistant" {
+			hasAssistant = true
+			break
+		}
+	}
+	if !hasAssistant {
+		t.Error("no assistant message persisted")
+	}
+
+	// Should have tool result
+	hasTool := false
+	for _, c := range calls {
+		if c.Message.Role == "tool" {
+			hasTool = true
+			break
+		}
+	}
+	if !hasTool {
+		t.Error("no tool result message persisted")
+	}
+}
+
+func TestLoop_SessionStore_MetadataUpdatedAtEnd(t *testing.T) {
+	store := &mockSessionStore{}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Hello!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.SessionStore = store
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	if store.getUpdateCalls() < 1 {
+		t.Error("expected UpdateMetadata to be called at session end")
+	}
+}
+
+func TestLoop_SessionStore_NilIsNoOp(t *testing.T) {
+	// Verify that SessionStore=nil doesn't cause any panics or behavior changes
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Hello!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.SessionStore = nil // explicit nil
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn (nil SessionStore should be no-op)", q.GetExitReason())
+	}
+}
+
+func TestLoop_SessionStore_CreateCalledOnStart(t *testing.T) {
+	store := &mockSessionStore{}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Hello!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.SessionStore = store
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	store.mu.Lock()
+	createCount := len(store.createCalls)
+	store.mu.Unlock()
+
+	if createCount < 1 {
+		t.Error("expected Create to be called when SessionStore is set")
+	}
+}
+
+func TestLoop_SessionStore_MessageOrderPreserved(t *testing.T) {
+	store := &mockSessionStore{}
+
+	mockTool := &mockRecordingTool{name: "Bash", output: tools.ToolOutput{Content: "hello"}}
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "Bash", map[string]any{"command": "echo hello"}),
+			endTurnResponse("Got it!"),
+		},
+	}
+	config := defaultConfig(client, registry)
+	config.SessionStore = store
+
+	q := RunLoop(context.Background(), "Run echo", config)
+	collectMessages(q)
+	q.Wait()
+
+	calls := store.getAppendCalls()
+
+	// Verify order: user → assistant → tool → assistant
+	expectedRoles := []string{"user", "assistant", "tool", "assistant"}
+	if len(calls) != len(expectedRoles) {
+		t.Fatalf("persisted %d messages, want %d; roles: %v", len(calls), len(expectedRoles), messageRoles(calls))
+	}
+	for i, expected := range expectedRoles {
+		if calls[i].Message.Role != expected {
+			t.Errorf("message[%d].Role = %q, want %q", i, calls[i].Message.Role, expected)
+		}
+	}
+}
+
+func messageRoles(entries []MessageEntry) []string {
+	roles := make([]string, len(entries))
+	for i, e := range entries {
+		roles[i] = e.Message.Role
+	}
+	return roles
+}
+
+// --- RestoreSession Tests ---
+
+func TestRestoreSession_ResumeMode(t *testing.T) {
+	store := &mockSessionStore{
+		loadFunc: func(id string) (*SessionState, error) {
+			if id != "session-123" {
+				t.Errorf("Load called with %q, want session-123", id)
+			}
+			return &SessionState{
+				Metadata: SessionMetadata{ID: "session-123", CWD: "/test"},
+				Messages: []MessageEntry{
+					{UUID: "msg-1", Message: llm.ChatMessage{Role: "user", Content: "Hello"}},
+					{UUID: "msg-2", Message: llm.ChatMessage{Role: "assistant", Content: "Hi there!"}},
+					{UUID: "msg-3", Message: llm.ChatMessage{Role: "user", Content: "How are you?"}},
+				},
+			}, nil
+		},
+	}
+
+	config := &AgentConfig{SessionStore: store}
+	state := &LoopState{SessionID: "new-session-id"}
+
+	opts := types.QueryOptions{Resume: "session-123"}
+	err := RestoreSession(config, state, opts)
+	if err != nil {
+		t.Fatalf("RestoreSession error: %v", err)
+	}
+
+	if len(state.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(state.Messages))
+	}
+	if state.Messages[0].Role != "user" {
+		t.Errorf("messages[0].Role = %q, want user", state.Messages[0].Role)
+	}
+	if state.Messages[1].Role != "assistant" {
+		t.Errorf("messages[1].Role = %q, want assistant", state.Messages[1].Role)
+	}
+	if state.Messages[2].Role != "user" {
+		t.Errorf("messages[2].Role = %q, want user", state.Messages[2].Role)
+	}
+	if state.SessionID != "session-123" {
+		t.Errorf("session ID = %q, want session-123", state.SessionID)
+	}
+}
+
+func TestRestoreSession_ContinueMode(t *testing.T) {
+	store := &mockSessionStore{
+		loadLatestFunc: func(cwd string) (*SessionState, error) {
+			if cwd != "/my/project" {
+				t.Errorf("LoadLatest called with %q, want /my/project", cwd)
+			}
+			return &SessionState{
+				Metadata: SessionMetadata{ID: "latest-session", CWD: "/my/project"},
+				Messages: []MessageEntry{
+					{UUID: "msg-1", Message: llm.ChatMessage{Role: "user", Content: "Start"}},
+					{UUID: "msg-2", Message: llm.ChatMessage{Role: "assistant", Content: "OK"}},
+				},
+			}, nil
+		},
+	}
+
+	config := &AgentConfig{SessionStore: store, CWD: "/my/project"}
+	state := &LoopState{SessionID: "unused-id"}
+
+	opts := types.QueryOptions{Continue: true}
+	err := RestoreSession(config, state, opts)
+	if err != nil {
+		t.Fatalf("RestoreSession error: %v", err)
+	}
+
+	if len(state.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(state.Messages))
+	}
+	if state.SessionID != "latest-session" {
+		t.Errorf("session ID = %q, want latest-session", state.SessionID)
+	}
+}
+
+func TestRestoreSession_ForkMode(t *testing.T) {
+	store := &mockSessionStore{
+		forkFunc: func(sourceID, newID string) (*SessionState, error) {
+			if sourceID != "source-id" {
+				t.Errorf("Fork sourceID = %q, want source-id", sourceID)
+			}
+			return &SessionState{
+				Metadata: SessionMetadata{
+					ID:              newID,
+					ParentSessionID: sourceID,
+				},
+				Messages: []MessageEntry{
+					{UUID: "msg-1", Message: llm.ChatMessage{Role: "user", Content: "Original Q"}},
+					{UUID: "msg-2", Message: llm.ChatMessage{Role: "assistant", Content: "Original A"}},
+				},
+			}, nil
+		},
+	}
+
+	config := &AgentConfig{SessionStore: store}
+	state := &LoopState{SessionID: "forked-session-id"}
+
+	opts := types.QueryOptions{ForkSession: true, Resume: "source-id"}
+	err := RestoreSession(config, state, opts)
+	if err != nil {
+		t.Fatalf("RestoreSession error: %v", err)
+	}
+
+	if len(state.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(state.Messages))
+	}
+	if state.SessionID != "forked-session-id" {
+		t.Errorf("session ID = %q, want forked-session-id", state.SessionID)
+	}
+}
+
+func TestRestoreSession_ResumeAtSpecificPoint(t *testing.T) {
+	store := &mockSessionStore{
+		loadUpToFunc: func(sessionID, msgUUID string) ([]MessageEntry, error) {
+			if sessionID != "session-123" {
+				t.Errorf("LoadMessagesUpTo sessionID = %q, want session-123", sessionID)
+			}
+			if msgUUID != "msg-uuid-2" {
+				t.Errorf("LoadMessagesUpTo messageUUID = %q, want msg-uuid-2", msgUUID)
+			}
+			// Return only the first 2 of 4 messages
+			return []MessageEntry{
+				{UUID: "msg-uuid-1", Message: llm.ChatMessage{Role: "user", Content: "Q1"}},
+				{UUID: "msg-uuid-2", Message: llm.ChatMessage{Role: "assistant", Content: "A1"}},
+			}, nil
+		},
+	}
+
+	config := &AgentConfig{SessionStore: store}
+	state := &LoopState{SessionID: "new-id"}
+
+	opts := types.QueryOptions{Resume: "session-123", ResumeSessionAt: "msg-uuid-2"}
+	err := RestoreSession(config, state, opts)
+	if err != nil {
+		t.Fatalf("RestoreSession error: %v", err)
+	}
+
+	if len(state.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(state.Messages))
+	}
+	if state.Messages[0].Role != "user" {
+		t.Errorf("messages[0].Role = %q, want user", state.Messages[0].Role)
+	}
+	if state.Messages[1].Role != "assistant" {
+		t.Errorf("messages[1].Role = %q, want assistant", state.Messages[1].Role)
+	}
+}
+
+func TestRestoreSession_NilStore(t *testing.T) {
+	config := &AgentConfig{SessionStore: nil}
+	state := &LoopState{SessionID: "test-id"}
+
+	opts := types.QueryOptions{Resume: "session-123"}
+	err := RestoreSession(config, state, opts)
+	if err != nil {
+		t.Fatalf("RestoreSession error with nil store: %v", err)
+	}
+
+	// State should be unchanged
+	if len(state.Messages) != 0 {
+		t.Errorf("expected 0 messages with nil store, got %d", len(state.Messages))
+	}
+	if state.SessionID != "test-id" {
+		t.Errorf("session ID should be unchanged, got %q", state.SessionID)
+	}
+}
+
+// --- Test Parity: Budget Exhaustion (ported from Python Agent SDK) ---
+
+func TestLoop_BudgetExhausted(t *testing.T) {
+	// Set a very small MaxBudgetUSD so the loop exits after the first turn.
+	// The mockLLMClient returns usage with tokens that cost more than the budget.
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			// First turn: respond with text (will consume tokens → cost > budget)
+			endTurnResponse("Hello!"),
+			// Second turn should never be reached
+			endTurnResponse("This should not be reached"),
+		},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.MaxBudgetUSD = 0.0000001 // Extremely small budget (effectively 0)
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	// After the first LLM call, cost should exceed the tiny budget
+	// The loop should detect this on the next iteration's checkTermination
+	// Note: because checkTermination runs at the TOP of the loop, the first
+	// turn always completes. The budget check fires on the second iteration.
+	// With a tool call response, we'd get the check. With end_turn, the stop
+	// hook fires first. So budget check is exercised when the loop continues.
+
+	// For a clean budget exhaustion test, use a stop hook that continues:
+	hooks := &mockHookRunner{
+		results: map[types.HookEvent][]HookResult{
+			types.HookEventStop: {
+				{Continue: boolPtr(true)}, // force continuation after end_turn
+			},
+		},
+	}
+	client2 := &mockLLMClient{
+		responses: []*mockStream{
+			endTurnResponse("Turn 1"),
+			endTurnResponse("Turn 2 - should not happen"),
+		},
+	}
+	config2 := defaultConfig(client2, registry)
+	config2.MaxBudgetUSD = 0.0000001
+	config2.Hooks = hooks
+
+	q2 := RunLoop(context.Background(), "Hello", config2)
+	collectMessages(q2)
+	q2.Wait()
+
+	if q2.GetExitReason() != ExitMaxBudget {
+		t.Errorf("exit reason = %s, want error_max_budget_usd", q2.GetExitReason())
+	}
+}
+
+// --- Stub Tests for Unimplemented Features ---
+
+func TestLoop_StructuredOutput(t *testing.T) {
+	t.Skip("not yet implemented: structured output (JSON schema enforcement)")
+}
+
+func TestLoop_DynamicControlSetPermissionMode(t *testing.T) {
+	t.Skip("not yet implemented: dynamic control (set_permission_mode at runtime)")
+}
+
+func TestLoop_DynamicControlSetModel(t *testing.T) {
+	t.Skip("not yet implemented: dynamic control (set_model at runtime)")
+}
+
+func TestLoop_GracefulInterruptMidStream(t *testing.T) {
+	t.Skip("not yet implemented: graceful interrupt mid-stream")
+}
+
+func TestLoop_SessionResumeContinueConversation(t *testing.T) {
+	t.Skip("not yet implemented: session resume (continue_conversation)")
+}
+
+func TestLoop_SettingSourcesHierarchy(t *testing.T) {
+	t.Skip("not yet implemented: setting_sources hierarchy")
+}

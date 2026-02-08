@@ -42,6 +42,11 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 	startTime := time.Now()
 	var apiDuration time.Duration
 
+	// 0. Session restore/create (if SessionStore is configured)
+	if config.SessionStore != nil {
+		initializeSession(config, state)
+	}
+
 	// 1. Fire SessionStart hook and collect additional context
 	sessionStartResults, _ := config.Hooks.Fire(ctx, types.HookEventSessionStart, map[string]any{
 		"source": "startup",
@@ -51,9 +56,19 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 	// 2. Emit system init message
 	emitInit(ch, config, state)
 
-	// 3. Build initial messages
-	state.Messages = []llm.ChatMessage{
-		{Role: "user", Content: prompt},
+	// 3. Build initial messages (unless restored from session)
+	if len(state.Messages) == 0 {
+		state.Messages = []llm.ChatMessage{
+			{Role: "user", Content: prompt},
+		}
+	}
+
+	// Persist initial user message
+	if config.SessionStore != nil && len(state.Messages) > 0 {
+		last := state.Messages[len(state.Messages)-1]
+		if last.Role == "user" {
+			persistMessage(config.SessionStore, state.SessionID, last)
+		}
 	}
 
 	// 4. Assemble system prompt
@@ -171,6 +186,9 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 		// 10. Emit assistant message
 		emitAssistant(ch, resp, state)
 
+		// 10.5 Persist assistant message
+		persistMessage(config.SessionStore, state.SessionID, assistantMsg)
+
 		// 11. Check stop reason
 		switch resp.StopReason {
 		case "end_turn":
@@ -220,6 +238,11 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			toolMsgs := llm.ConvertToToolMessages(toolResults)
 			state.Messages = append(state.Messages, toolMsgs...)
 
+			// Persist tool result messages
+			for _, tm := range toolMsgs {
+				persistMessage(config.SessionStore, state.SessionID, tm)
+			}
+
 			if interrupted {
 				state.ExitReason = ExitInterrupted
 				goto done
@@ -235,6 +258,9 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 	}
 
 done:
+	// 11.5 Flush session metadata
+	finalizeSession(config, state)
+
 	// 12. Emit result message
 	emitResult(ch, state, startTime, apiDuration)
 
@@ -317,6 +343,110 @@ func estimateMessageTokens(msg llm.ChatMessage) int {
 		return overhead
 	default:
 		// For complex content ([]ContentPart etc), use a rough estimate
+		_ = c
 		return overhead
 	}
+}
+
+// persistMessage writes a ChatMessage to the session store as a MessageEntry.
+// Errors are logged but not fatal — persistence is best-effort.
+func persistMessage(store SessionStore, sessionID string, msg llm.ChatMessage) {
+	if store == nil {
+		return
+	}
+	entry := MessageEntry{
+		UUID:      uuid.New().String(),
+		Timestamp: time.Now(),
+		Message:   msg,
+	}
+	_ = store.AppendMessage(sessionID, entry)
+}
+
+// persistSDKMessage writes an SDKMessage to the transcript log.
+func persistSDKMessage(store SessionStore, sessionID string, msg types.SDKMessage) {
+	if store == nil {
+		return
+	}
+	_ = store.AppendSDKMessage(sessionID, msg)
+}
+
+// initializeSession creates or restores a session based on QueryOptions embedded in config.
+func initializeSession(config *AgentConfig, state *LoopState) {
+	if config.SessionStore == nil {
+		return
+	}
+
+	// Check for resume/continue/fork (via stored options on config)
+	// For now, create a new session if one doesn't exist
+	meta := SessionMetadata{
+		ID:        state.SessionID,
+		CWD:       config.CWD,
+		Model:     config.Model,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	_ = config.SessionStore.Create(meta)
+}
+
+// finalizeSession updates session metadata with final stats.
+func finalizeSession(config *AgentConfig, state *LoopState) {
+	if config.SessionStore == nil {
+		return
+	}
+	_ = config.SessionStore.UpdateMetadata(state.SessionID, func(m *SessionMetadata) {
+		m.MessageCount = len(state.Messages)
+		m.TurnCount = state.TurnCount
+		m.TotalCostUSD = state.TotalCostUSD
+	})
+}
+
+// RestoreSession loads a previous session's messages into the loop state.
+// Called by the host app before RunLoop to set up resume/continue/fork.
+func RestoreSession(config *AgentConfig, state *LoopState, opts types.QueryOptions) error {
+	if config.SessionStore == nil {
+		return nil
+	}
+
+	var sessionState *SessionState
+	var err error
+
+	switch {
+	case opts.ForkSession && opts.Resume != "":
+		// Fork from an existing session
+		sessionState, err = config.SessionStore.Fork(opts.Resume, state.SessionID)
+
+	case opts.Continue:
+		// Resume the latest session for the CWD
+		sessionState, err = config.SessionStore.LoadLatest(config.CWD)
+
+	case opts.Resume != "":
+		// Resume a specific session
+		if opts.ResumeSessionAt != "" {
+			var entries []MessageEntry
+			entries, err = config.SessionStore.LoadMessagesUpTo(opts.Resume, opts.ResumeSessionAt)
+			if err == nil {
+				sessionState = &SessionState{Messages: entries}
+			}
+		} else {
+			sessionState, err = config.SessionStore.Load(opts.Resume)
+		}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if sessionState != nil && len(sessionState.Messages) > 0 {
+		// Restore messages into loop state
+		msgs := make([]llm.ChatMessage, len(sessionState.Messages))
+		for i, entry := range sessionState.Messages {
+			msgs[i] = entry.Message
+		}
+		state.Messages = msgs
+		if sessionState.Metadata.ID != "" {
+			state.SessionID = sessionState.Metadata.ID
+		}
+	}
+
+	return nil
 }
