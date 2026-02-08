@@ -56,6 +56,51 @@ func WithPermissionMode(mode types.PermissionMode) Option {
 	return func(c *AgentConfig) { c.PermissionMode = mode }
 }
 
+// WithPrompter sets the system prompt assembler.
+func WithPrompter(p SystemPromptAssembler) Option {
+	return func(c *AgentConfig) { c.Prompter = p }
+}
+
+// WithOS sets the operating system identifier.
+func WithOS(os string) Option {
+	return func(c *AgentConfig) { c.OS = os }
+}
+
+// WithShell sets the shell path.
+func WithShell(shell string) Option {
+	return func(c *AgentConfig) { c.Shell = shell }
+}
+
+// WithClaudeMD sets the pre-loaded CLAUDE.md content.
+func WithClaudeMD(content string) Option {
+	return func(c *AgentConfig) { c.ClaudeMDContent = content }
+}
+
+// WithOutputStyle sets the output style configuration.
+func WithOutputStyle(style string) Option {
+	return func(c *AgentConfig) { c.OutputStyle = style }
+}
+
+// WithMCPServers sets the MCP server configurations.
+func WithMCPServers(servers map[string]types.McpServerConfig) Option {
+	return func(c *AgentConfig) { c.MCPServers = servers }
+}
+
+// WithSessionsEnabled enables/disables past sessions access.
+func WithSessionsEnabled(enabled bool) Option {
+	return func(c *AgentConfig) { c.SessionsEnabled = enabled }
+}
+
+// WithMemoryEnabled enables/disables agent memory.
+func WithMemoryEnabled(enabled bool) Option {
+	return func(c *AgentConfig) { c.MemoryEnabled = enabled }
+}
+
+// WithAgentType sets the agent type identifier.
+func WithAgentType(agentType string) Option {
+	return func(c *AgentConfig) { c.AgentType = agentType }
+}
+
 // New creates a fully wired AgentConfig with sensible defaults.
 func New(llmClient llm.Client, registry *tools.Registry, opts ...Option) AgentConfig {
 	config := DefaultConfig()

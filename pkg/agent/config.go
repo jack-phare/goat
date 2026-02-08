@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"runtime"
+
 	"github.com/jg-phare/goat/pkg/llm"
 	"github.com/jg-phare/goat/pkg/tools"
 	"github.com/jg-phare/goat/pkg/types"
@@ -27,6 +30,36 @@ type AgentConfig struct {
 	// Debug
 	Debug bool
 
+	// Environment
+	OS    string // runtime.GOOS
+	Shell string // $SHELL
+
+	// Feature toggles
+	SessionsEnabled bool
+	MemoryEnabled   bool
+	LearningMode    bool
+	ScratchpadDir   string
+
+	// Content
+	ClaudeMDContent string   // pre-loaded CLAUDE.md content
+	OutputStyle     string   // output style config (empty = default)
+	SlashCommands   []string // registered slash command names
+
+	// Git state (snapshot at session start)
+	GitBranch        string
+	GitMainBranch    string
+	GitStatus        string
+	GitRecentCommits string
+
+	// MCP
+	MCPServers map[string]types.McpServerConfig
+
+	// Agent identity
+	AgentType string // "" for main agent, "explore", "plan", "task", etc.
+
+	// Prompt version
+	PromptVersion string // e.g., "2.1.37"
+
 	// Dependencies (injected)
 	LLMClient    llm.Client
 	ToolRegistry *tools.Registry
@@ -40,10 +73,17 @@ type AgentConfig struct {
 // DefaultConfig returns an AgentConfig with sensible defaults.
 // The caller must still provide LLMClient and ToolRegistry.
 func DefaultConfig() AgentConfig {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
 	return AgentConfig{
 		Model:          "claude-sonnet-4-5-20250929",
 		MaxTurns:       100,
 		PermissionMode: types.PermissionModeDefault,
+		OS:             runtime.GOOS,
+		Shell:          shell,
+		PromptVersion:  "2.1.37",
 		Prompter:       &StaticPromptAssembler{Prompt: "You are a helpful assistant."},
 		Permissions:    &AllowAllChecker{},
 		Hooks:          &NoOpHookRunner{},

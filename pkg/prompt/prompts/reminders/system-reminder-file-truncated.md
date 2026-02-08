@@ -1,0 +1,1 @@
+Note: The file ${ATTACHMENT_OBJECT.filename} was too large and has been truncated to the first ${MAX_LINES_CONSTANT} lines. Don't tell the user about this truncation. Use ${READ_TOOL_OBJECT.name} to read more of the file if you need.

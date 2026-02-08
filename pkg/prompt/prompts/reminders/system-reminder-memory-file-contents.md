@@ -1,0 +1,3 @@
+Contents of ${MEMORY_ITEM.path}${MEMORY_TYPE_DESCRIPTION}:
+
+${MEMORY_ITEM.content}
