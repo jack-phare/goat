@@ -8,8 +8,8 @@ import (
 )
 
 // Resolve merges agent definitions from multiple sources.
-// Priority: builtIn (0) < cliAgents (5) < fileBased (10-30).
-// Higher priority overwrites lower.
+// Priority: builtIn (0) < fileBased (10-30) < cliAgents (100).
+// CLI agents are highest priority and always win.
 func Resolve(builtIn, cliAgents, fileBased map[string]Definition) map[string]Definition {
 	result := make(map[string]Definition)
 
@@ -18,21 +18,20 @@ func Resolve(builtIn, cliAgents, fileBased map[string]Definition) map[string]Def
 		result[name] = def
 	}
 
-	// 2. CLI agents
-	for name, def := range cliAgents {
-		result[name] = def
-	}
-
-	// 3. File-based (highest priority — each already has its own priority)
+	// 2. File-based (priority-ordered among themselves)
 	for name, def := range fileBased {
 		if existing, ok := result[name]; ok {
-			// Only overwrite if new def has higher or equal priority
 			if def.Priority >= existing.Priority {
 				result[name] = def
 			}
 		} else {
 			result[name] = def
 		}
+	}
+
+	// 3. CLI agents (highest priority — always wins)
+	for name, def := range cliAgents {
+		result[name] = def
 	}
 
 	return result
@@ -52,7 +51,7 @@ func ParseCLIAgents(jsonStr string) (map[string]Definition, error) {
 
 	result := make(map[string]Definition, len(raw))
 	for name, ad := range raw {
-		result[name] = FromTypesDefinition(name, ad, SourceCLIFlag, 5)
+		result[name] = FromTypesDefinition(name, ad, SourceCLIFlag, 100)
 	}
 
 	return result, nil

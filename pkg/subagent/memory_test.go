@@ -7,16 +7,45 @@ import (
 	"testing"
 )
 
-func TestResolveMemoryDir_Auto(t *testing.T) {
-	result := resolveMemoryDir("my-agent", "auto", "/home/user/project")
+func TestResolveMemoryDir_User(t *testing.T) {
+	result := resolveMemoryDir("my-agent", "user", "/home/user/project")
 	if result == "" {
-		t.Fatal("expected non-empty dir for 'auto'")
+		t.Fatal("expected non-empty dir for 'user'")
+	}
+	if !strings.Contains(result, "agent-memory") {
+		t.Errorf("result = %q, should contain 'agent-memory'", result)
 	}
 	if !strings.Contains(result, "my-agent") {
 		t.Errorf("result = %q, should contain agent name", result)
 	}
-	if !strings.Contains(result, "memory") {
-		t.Errorf("result = %q, should contain 'memory'", result)
+	// Should be under ~/.claude/agent-memory/
+	if !strings.Contains(result, ".claude") {
+		t.Errorf("result = %q, should be under ~/.claude/", result)
+	}
+}
+
+func TestResolveMemoryDir_Auto(t *testing.T) {
+	// "auto" is an alias for "user"
+	auto := resolveMemoryDir("my-agent", "auto", "/home/user/project")
+	user := resolveMemoryDir("my-agent", "user", "/home/user/project")
+	if auto != user {
+		t.Errorf("auto = %q, user = %q; should be equal", auto, user)
+	}
+}
+
+func TestResolveMemoryDir_Project(t *testing.T) {
+	result := resolveMemoryDir("my-agent", "project", "/home/user/project")
+	want := filepath.Join("/home/user/project", ".claude", "agent-memory", "my-agent")
+	if result != want {
+		t.Errorf("result = %q, want %q", result, want)
+	}
+}
+
+func TestResolveMemoryDir_Local(t *testing.T) {
+	result := resolveMemoryDir("my-agent", "local", "/home/user/project")
+	want := filepath.Join("/home/user/project", ".claude", "agent-memory-local", "my-agent")
+	if result != want {
+		t.Errorf("result = %q, want %q", result, want)
 	}
 }
 

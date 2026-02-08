@@ -132,7 +132,7 @@ Prompt.
 	}
 }
 
-func TestLoader_LoadAll_SkipsInvalidFiles(t *testing.T) {
+func TestLoader_LoadAll_ErrorsOnInvalidFiles(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".claude", "agents")
 	writeAgentFile(t, agentDir, "valid.md", `---
@@ -140,16 +140,13 @@ description: Valid agent
 ---
 Prompt.
 `)
-	// Invalid frontmatter
+	// Invalid frontmatter — should cause an error
 	writeAgentFile(t, agentDir, "invalid.md", "No frontmatter here")
 
 	loader := NewLoader(dir, "")
-	defs, err := loader.LoadAll()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(defs) != 1 {
-		t.Errorf("expected 1 def (invalid skipped), got %d", len(defs))
+	_, err := loader.LoadAll()
+	if err == nil {
+		t.Fatal("expected error for invalid agent file, got nil")
 	}
 }
 

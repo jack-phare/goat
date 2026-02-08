@@ -11,7 +11,7 @@ func TestResolve_MergePriority(t *testing.T) {
 		"explore": FromTypesDefinition("explore", types.AgentDefinition{Description: "built-in explore"}, SourceBuiltIn, 0),
 	}
 	cli := map[string]Definition{
-		"explore": FromTypesDefinition("explore", types.AgentDefinition{Description: "cli explore"}, SourceCLIFlag, 5),
+		"explore": FromTypesDefinition("explore", types.AgentDefinition{Description: "cli explore"}, SourceCLIFlag, 100),
 	}
 	fileBased := map[string]Definition{
 		"explore": {AgentDefinition: types.AgentDefinition{Name: "explore", Description: "project explore"}, Source: SourceProject, Priority: 30},
@@ -21,6 +21,21 @@ func TestResolve_MergePriority(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 def, got %d", len(result))
 	}
+	// CLI agents have highest priority and always win
+	if result["explore"].Description != "cli explore" {
+		t.Errorf("Description = %q, want 'cli explore'", result["explore"].Description)
+	}
+}
+
+func TestResolve_FileBasedOverridesBuiltIn(t *testing.T) {
+	builtIn := map[string]Definition{
+		"explore": FromTypesDefinition("explore", types.AgentDefinition{Description: "built-in explore"}, SourceBuiltIn, 0),
+	}
+	fileBased := map[string]Definition{
+		"explore": {AgentDefinition: types.AgentDefinition{Name: "explore", Description: "project explore"}, Source: SourceProject, Priority: 30},
+	}
+
+	result := Resolve(builtIn, nil, fileBased)
 	if result["explore"].Description != "project explore" {
 		t.Errorf("Description = %q, want 'project explore'", result["explore"].Description)
 	}
@@ -45,7 +60,7 @@ func TestResolve_CLIOverridesBuiltIn(t *testing.T) {
 		"agent": FromTypesDefinition("agent", types.AgentDefinition{Description: "built-in"}, SourceBuiltIn, 0),
 	}
 	cli := map[string]Definition{
-		"agent": FromTypesDefinition("agent", types.AgentDefinition{Description: "cli"}, SourceCLIFlag, 5),
+		"agent": FromTypesDefinition("agent", types.AgentDefinition{Description: "cli"}, SourceCLIFlag, 100),
 	}
 
 	result := Resolve(builtIn, cli, nil)
@@ -70,8 +85,8 @@ func TestParseCLIAgents_Valid(t *testing.T) {
 	if def.Source != SourceCLIFlag {
 		t.Errorf("Source = %v", def.Source)
 	}
-	if def.Priority != 5 {
-		t.Errorf("Priority = %d", def.Priority)
+	if def.Priority != 100 {
+		t.Errorf("Priority = %d, want 100", def.Priority)
 	}
 }
 

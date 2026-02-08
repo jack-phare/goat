@@ -10,24 +10,33 @@ import (
 const maxMemoryLines = 200
 
 // resolveMemoryDir returns the memory directory path for an agent.
-// If scope is "auto", it creates a per-agent subdirectory under the project memory dir.
-// If scope is a path, it uses that directly.
+// Named scopes: "user", "project", "local" map to well-known directories.
+// "auto" is an alias for "user".
+// Any other non-empty value is treated as a direct path.
 func resolveMemoryDir(agentName, scope, cwd string) string {
 	if scope == "" {
 		return ""
 	}
 
-	if scope == "auto" {
-		// Default: ~/.claude/projects/<project-hash>/agents/<agent-name>/memory/
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		return filepath.Join(home, ".claude", "projects", sanitizePath(cwd), "agents", agentName, "memory")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
 	}
 
-	// Treat scope as a direct path
-	return scope
+	switch scope {
+	case "user", "auto":
+		// ~/.claude/agent-memory/<agent-name>/
+		return filepath.Join(home, ".claude", "agent-memory", agentName)
+	case "project":
+		// .claude/agent-memory/<agent-name>/ (relative to CWD, shareable via VCS)
+		return filepath.Join(cwd, ".claude", "agent-memory", agentName)
+	case "local":
+		// .claude/agent-memory-local/<agent-name>/ (relative to CWD, not in VCS)
+		return filepath.Join(cwd, ".claude", "agent-memory-local", agentName)
+	default:
+		// Treat as a direct path
+		return scope
+	}
 }
 
 // ensureMemoryDir creates the memory directory if it doesn't exist.
