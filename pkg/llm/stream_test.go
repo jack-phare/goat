@@ -11,7 +11,7 @@ func makeTestStream(sseData string) *Stream {
 	body := io.NopCloser(strings.NewReader(sseData))
 	ctx, cancel := context.WithCancel(context.Background())
 	events := ParseSSEStream(ctx, body)
-	return newStream(events, body, cancel)
+	return NewStream(events, body, cancel)
 }
 
 func TestStreamAccumulate(t *testing.T) {

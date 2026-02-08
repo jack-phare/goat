@@ -18,8 +18,8 @@ type Tool interface {
 	InputSchema() map[string]any
 }
 
-// buildCompletionRequest assembles a full CompletionRequest from loop state.
-func buildCompletionRequest(config ClientConfig, systemPrompt string, messages []ChatMessage, tools []Tool, loopState LoopState) *CompletionRequest {
+// BuildCompletionRequest assembles a full CompletionRequest from loop state.
+func BuildCompletionRequest(config ClientConfig, systemPrompt string, messages []ChatMessage, tools []Tool, loopState LoopState) *CompletionRequest {
 	req := &CompletionRequest{
 		Model:         toRequestModel(config.Model),
 		Stream:        true,
@@ -75,8 +75,8 @@ func buildCompletionRequest(config ClientConfig, systemPrompt string, messages [
 	return req
 }
 
-// convertToToolMessages converts internal tool_result content blocks to OpenAI "tool" messages.
-func convertToToolMessages(toolResults []ToolResult) []ChatMessage {
+// ConvertToToolMessages converts internal tool_result content blocks to OpenAI "tool" messages.
+func ConvertToToolMessages(toolResults []ToolResult) []ChatMessage {
 	msgs := make([]ChatMessage, 0, len(toolResults))
 	for _, tr := range toolResults {
 		msgs = append(msgs, ChatMessage{

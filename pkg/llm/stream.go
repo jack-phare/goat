@@ -16,8 +16,8 @@ type Stream struct {
 	cancel context.CancelFunc
 }
 
-// newStream creates a Stream from an SSE event channel and HTTP response body.
-func newStream(events <-chan StreamEvent, body io.ReadCloser, cancel context.CancelFunc) *Stream {
+// NewStream creates a Stream from an SSE event channel and HTTP response body.
+func NewStream(events <-chan StreamEvent, body io.ReadCloser, cancel context.CancelFunc) *Stream {
 	return &Stream{
 		events: events,
 		body:   body,

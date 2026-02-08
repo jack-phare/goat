@@ -48,7 +48,7 @@ func accumulateSSE(t *testing.T, sseData string) *CompletionResponse {
 	body := io.NopCloser(strings.NewReader(sseData))
 	ctx := context.Background()
 	events := ParseSSEStream(ctx, body)
-	stream := newStream(events, body, func() {})
+	stream := NewStream(events, body, func() {})
 	resp, err := stream.Accumulate()
 	if err != nil {
 		t.Fatalf("Accumulate error: %v", err)

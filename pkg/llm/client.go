@@ -95,7 +95,7 @@ func (c *httpClient) Complete(ctx context.Context, req *CompletionRequest) (*Str
 	streamCtx, cancel := context.WithCancel(ctx)
 	events := ParseSSEStream(streamCtx, resp.Body)
 
-	return newStream(events, resp.Body, cancel), nil
+	return NewStream(events, resp.Body, cancel), nil
 }
 
 // Model returns the configured default model string.

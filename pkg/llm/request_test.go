@@ -29,7 +29,7 @@ func TestBuildCompletionRequest(t *testing.T) {
 			{Role: "user", Content: "Hello"},
 		}
 
-		req := buildCompletionRequest(config, "You are helpful.", messages, nil, LoopState{})
+		req := BuildCompletionRequest(config, "You are helpful.", messages, nil, LoopState{})
 
 		if req.Model != "anthropic/claude-opus-4-5-20250514" {
 			t.Errorf("Model = %q, want anthropic/ prefix", req.Model)
@@ -67,7 +67,7 @@ func TestBuildCompletionRequest(t *testing.T) {
 			},
 		}
 
-		req := buildCompletionRequest(config, "sys", nil, tools, LoopState{})
+		req := BuildCompletionRequest(config, "sys", nil, tools, LoopState{})
 
 		if len(req.Tools) != 1 {
 			t.Fatalf("len(Tools) = %d, want 1", len(req.Tools))
@@ -87,7 +87,7 @@ func TestBuildCompletionRequest(t *testing.T) {
 			MaxThinkingTokens: 10000,
 		}
 
-		req := buildCompletionRequest(config, "sys", nil, nil, LoopState{})
+		req := BuildCompletionRequest(config, "sys", nil, nil, LoopState{})
 
 		if req.ExtraBody == nil {
 			t.Fatal("ExtraBody should not be nil with MaxThinkingTokens set")
@@ -111,7 +111,7 @@ func TestBuildCompletionRequest(t *testing.T) {
 			Betas:     []string{"context-1m-2025-08-07"},
 		}
 
-		req := buildCompletionRequest(config, "sys", nil, nil, LoopState{SessionID: "session-123"})
+		req := BuildCompletionRequest(config, "sys", nil, nil, LoopState{SessionID: "session-123"})
 
 		if req.ExtraBody == nil {
 			t.Fatal("ExtraBody should not be nil")
@@ -142,7 +142,7 @@ func TestBuildCompletionRequest(t *testing.T) {
 			Betas:             []string{"beta-1"},
 		}
 
-		req := buildCompletionRequest(config, "sys", nil, nil, LoopState{SessionID: "sess"})
+		req := BuildCompletionRequest(config, "sys", nil, nil, LoopState{SessionID: "sess"})
 
 		// Ensure it serializes properly
 		data, err := json.Marshal(req)
@@ -171,7 +171,7 @@ func TestBuildCompletionRequest(t *testing.T) {
 
 	t.Run("no extra_body when not needed", func(t *testing.T) {
 		config := ClientConfig{Model: "claude-opus-4-5-20250514", MaxTokens: 8192}
-		req := buildCompletionRequest(config, "sys", nil, nil, LoopState{})
+		req := BuildCompletionRequest(config, "sys", nil, nil, LoopState{})
 
 		if req.ExtraBody != nil {
 			t.Error("ExtraBody should be nil when no extra fields are set")
