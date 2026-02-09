@@ -10,6 +10,8 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
+const globMaxOutput = 50000 // characters
+
 // GlobTool finds files by glob pattern.
 type GlobTool struct {
 	CWD string
@@ -65,5 +67,10 @@ func (g *GlobTool) Execute(_ context.Context, input map[string]any) (ToolOutput,
 		return ToolOutput{Content: "No files matched the pattern."}, nil
 	}
 
-	return ToolOutput{Content: strings.Join(matches, "\n")}, nil
+	output := strings.Join(matches, "\n")
+	if len(output) > globMaxOutput {
+		totalLen := len(output)
+		output = output[:globMaxOutput] + fmt.Sprintf("\n... (truncated, %d total characters, %d files matched)", totalLen, len(matches))
+	}
+	return ToolOutput{Content: output}, nil
 }

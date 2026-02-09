@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,37 @@ func TestGlob_NoMatches(t *testing.T) {
 	}
 	if !strings.Contains(out.Content, "No files") {
 		t.Errorf("expected 'No files' message, got %q", out.Content)
+	}
+}
+
+func TestGlobTool_OutputTruncation(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create enough files with long names to exceed globMaxOutput (50K chars)
+	// Each filename ~100 chars + full path, so we need ~500+ files
+	for i := 0; i < 600; i++ {
+		name := fmt.Sprintf("file_%04d_%s.txt", i, strings.Repeat("a", 80))
+		os.WriteFile(filepath.Join(dir, name), []byte(""), 0o644)
+	}
+
+	tool := &GlobTool{CWD: dir}
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"pattern": "*.txt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.IsError {
+		t.Fatalf("unexpected error: %s", out.Content)
+	}
+
+	if strings.Contains(out.Content, "truncated") {
+		if !strings.Contains(out.Content, "total characters") {
+			t.Error("truncation message should include total character count")
+		}
+		if !strings.Contains(out.Content, "files matched") {
+			t.Error("truncation message should include file count")
+		}
 	}
 }
 

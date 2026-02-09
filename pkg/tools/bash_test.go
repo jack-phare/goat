@@ -186,3 +186,20 @@ func TestBash_LargeOutput(t *testing.T) {
 		t.Error("expected truncation message")
 	}
 }
+
+func TestBash_TruncationProgressiveDisclosure(t *testing.T) {
+	tool := &BashTool{}
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"command": "python3 -c 'print(\"x\" * 40000)'",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should include actionable guidance about limiting output
+	if !strings.Contains(out.Content, "head/tail") {
+		t.Error("truncation message should mention head/tail")
+	}
+	if !strings.Contains(out.Content, "run_in_background") {
+		t.Error("truncation message should mention run_in_background")
+	}
+}

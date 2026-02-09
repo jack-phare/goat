@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const grepMaxOutput = 100000 // characters
+
 // GrepTool searches file contents using ripgrep.
 type GrepTool struct {
 	CWD string
@@ -119,6 +121,12 @@ func (g *GrepTool) Execute(ctx context.Context, input map[string]any) (ToolOutpu
 		if limit < len(lines) {
 			result = strings.Join(lines[:limit], "\n")
 		}
+	}
+
+	// Hard output limit as safety net
+	if len(result) > grepMaxOutput {
+		totalLen := len(result)
+		result = result[:grepMaxOutput] + fmt.Sprintf("\n... (truncated, %d total characters)", totalLen)
 	}
 
 	return ToolOutput{Content: result}, nil

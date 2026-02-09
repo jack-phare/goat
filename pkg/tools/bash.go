@@ -23,7 +23,7 @@ type BashTool struct {
 func (b *BashTool) Name() string { return "Bash" }
 
 func (b *BashTool) Description() string {
-	return "Executes a given bash command with optional timeout. The command argument is required."
+	return "Executes a given bash command with optional timeout.\n\nIMPORTANT: This tool is for terminal operations."
 }
 
 func (b *BashTool) InputSchema() map[string]any {
@@ -96,7 +96,9 @@ func (b *BashTool) executeBackground(ctx context.Context, command string, input 
 		result := string(output)
 
 		if len(result) > bashMaxOutput {
-			result = result[:bashMaxOutput] + fmt.Sprintf("\n... (truncated, %d total characters)", len(string(output)))
+			result = result[:bashMaxOutput] + fmt.Sprintf(
+				"\n... (truncated, %d total characters. Consider using head/tail or piping to limit output)",
+				len(string(output)))
 		}
 
 		if err != nil {
@@ -136,7 +138,9 @@ func (b *BashTool) executeForeground(ctx context.Context, command string, input 
 
 	// Truncate large output
 	if len(result) > bashMaxOutput {
-		result = result[:bashMaxOutput] + fmt.Sprintf("\n... (truncated, %d total characters)", len(string(output)))
+		result = result[:bashMaxOutput] + fmt.Sprintf(
+			"\n... (truncated, %d total characters. Consider using head/tail, piping to limit output, or running in background with run_in_background parameter)",
+			len(string(output)))
 	}
 
 	if err != nil {

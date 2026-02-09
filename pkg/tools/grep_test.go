@@ -157,3 +157,42 @@ func TestGrep_MissingPattern(t *testing.T) {
 		t.Error("expected error for missing pattern")
 	}
 }
+
+func TestGrepTool_OutputTruncation(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a file with many matching lines to produce >100K chars of output
+	var content strings.Builder
+	line := strings.Repeat("matching_pattern_abcdefghij", 5) + "\n" // ~130 chars per line
+	for i := 0; i < 1000; i++ {
+		content.WriteString(line)
+	}
+	os.WriteFile(filepath.Join(dir, "big.txt"), []byte(content.String()), 0o644)
+
+	tool := &GrepTool{CWD: dir}
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"pattern":     "matching_pattern",
+		"output_mode": "content",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.IsError {
+		t.Fatalf("unexpected error: %s", out.Content)
+	}
+
+	// Verify the output was truncated and contains the indicator
+	if !strings.Contains(out.Content, "truncated") {
+		t.Fatal("expected output to be truncated")
+	}
+	if !strings.Contains(out.Content, "total characters") {
+		t.Error("truncation message should include total character count")
+	}
+
+	// The actual content (before suffix) should be at the limit
+	// Total output = grepMaxOutput + suffix length, which is fine
+	suffixIdx := strings.Index(out.Content, "\n... (truncated")
+	if suffixIdx > grepMaxOutput {
+		t.Errorf("content before suffix should be at most %d chars, got %d", grepMaxOutput, suffixIdx)
+	}
+}
