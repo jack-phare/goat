@@ -1,0 +1,5 @@
+[
+  {"id": "simple-math", "prompt": "What is 2+2?", "max_turns": 3},
+  {"id": "file-create", "prompt": "Create hello.py that prints hello world", "max_turns": 10},
+  {"id": "grep-find", "prompt": "Find all .go files containing 'func main'", "max_turns": 5}
+]

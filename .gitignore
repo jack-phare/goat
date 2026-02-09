@@ -10,6 +10,7 @@
 evals/.venv/
 evals/__pycache__/
 evals/goat-eval-linux
+scripts/goat-eval-linux
 logs/
 
 # Build artifacts
