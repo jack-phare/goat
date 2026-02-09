@@ -1,6 +1,9 @@
 package subagent
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestResolveModel_InputOverride(t *testing.T) {
 	input := strPtr("opus")
@@ -48,6 +51,21 @@ func TestExpandModelAlias_Known(t *testing.T) {
 	}
 }
 
+func TestExpandModelAlias_NonClaude(t *testing.T) {
+	tests := []struct {
+		alias string
+		want  string
+	}{
+		{"mini", "gpt-5-mini"},
+		{"nano", "gpt-5-nano"},
+	}
+	for _, tt := range tests {
+		if got := expandModelAlias(tt.alias); got != tt.want {
+			t.Errorf("expandModelAlias(%q) = %q, want %q", tt.alias, got, tt.want)
+		}
+	}
+}
+
 func TestExpandModelAlias_Unknown(t *testing.T) {
 	result := expandModelAlias("claude-custom-model-v1")
 	if result != "claude-custom-model-v1" {
@@ -68,6 +86,54 @@ func TestResolveModel_AllEmpty(t *testing.T) {
 	if result != "" {
 		t.Errorf("result = %q, want empty", result)
 	}
+}
+
+func TestRegisterModelAlias(t *testing.T) {
+	// Save and restore original aliases
+	origAliases := ModelAliases()
+	defer func() {
+		aliasMu.Lock()
+		modelAliases = origAliases
+		aliasMu.Unlock()
+	}()
+
+	RegisterModelAlias("groq-llama", "llama-3.3-70b-versatile")
+	got := expandModelAlias("groq-llama")
+	if got != "llama-3.3-70b-versatile" {
+		t.Errorf("expandModelAlias after register = %q, want llama-3.3-70b-versatile", got)
+	}
+}
+
+func TestModelAliases_Snapshot(t *testing.T) {
+	snap := ModelAliases()
+	// Mutating the snapshot should not affect the original
+	snap["test-mutation"] = "should-not-persist"
+	if _, ok := ModelAliases()["test-mutation"]; ok {
+		t.Error("snapshot mutation leaked into original map")
+	}
+}
+
+func TestExpandModelAlias_ConcurrentSafe(t *testing.T) {
+	origAliases := ModelAliases()
+	defer func() {
+		aliasMu.Lock()
+		modelAliases = origAliases
+		aliasMu.Unlock()
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func(n int) {
+			defer wg.Done()
+			RegisterModelAlias("concurrent-test", "model-v"+string(rune('0'+n%10)))
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = expandModelAlias("concurrent-test")
+		}()
+	}
+	wg.Wait()
 }
 
 func strPtr(s string) *string { return &s }

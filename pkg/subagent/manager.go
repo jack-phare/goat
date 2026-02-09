@@ -179,6 +179,8 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 		AgentType:         input.SubagentType,
 		BackgroundMode:    isBackground,
 		CanSpawnSubagents: false,
+		Betas:             m.parentBetas(),
+		ContextLimitFunc:  m.parentContextLimitFunc(),
 		LLMClient:         m.opts.LLMClient,
 		Prompter:          &agent.StaticPromptAssembler{Prompt: systemPrompt},
 		Permissions:       m.resolvePermissions(isBackground),
@@ -669,6 +671,20 @@ func (m *Manager) parentCWD() string {
 		return m.opts.ParentConfig.CWD
 	}
 	return ""
+}
+
+func (m *Manager) parentBetas() []string {
+	if m.opts.ParentConfig != nil {
+		return m.opts.ParentConfig.Betas
+	}
+	return nil
+}
+
+func (m *Manager) parentContextLimitFunc() func(string, []string) int {
+	if m.opts.ParentConfig != nil {
+		return m.opts.ParentConfig.ContextLimitFunc
+	}
+	return nil
 }
 
 func (m *Manager) parentToolNames() []string {
