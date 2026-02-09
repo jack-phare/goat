@@ -2,8 +2,8 @@ package teams
 
 import "sync"
 
-// DelegateModeTools is the whitelist of tools available to the team lead
-// when delegate mode is active. The lead is restricted to coordination-only tools.
+// DelegateModeTools lists the tools available in delegate (lead agent) mode.
+// TaskCreate/TaskUpdate/TaskList are forward-declared; implementations pending.
 var DelegateModeTools = []string{
 	"TeamCreate",
 	"SendMessage",
@@ -11,7 +11,7 @@ var DelegateModeTools = []string{
 	"TaskCreate",
 	"TaskUpdate",
 	"TaskList",
-	"TaskGet",
+	"AskUserQuestion",
 }
 
 // DelegateModeState tracks whether delegate mode is active.

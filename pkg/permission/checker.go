@@ -24,9 +24,10 @@ type Checker struct {
 	allowDangerouslySkipPermissions bool
 
 	// Hook & callback integration
-	hookRunner   agent.HookRunner
-	canUseTool   types.CanUseToolFunc
-	userPrompter UserPrompter
+	hookRunner           agent.HookRunner
+	canUseTool           types.CanUseToolFunc
+	userPrompter         UserPrompter
+	toolAnnotationLookup func(string) *MCPAnnotations
 }
 
 // NewChecker creates a permission Checker from configuration.
@@ -55,6 +56,7 @@ func NewChecker(config CheckerConfig) *Checker {
 		hookRunner:                      config.HookRunner,
 		canUseTool:                      config.CanUseTool,
 		userPrompter:                    config.UserPrompter,
+		toolAnnotationLookup:            config.ToolAnnotationLookup,
 	}
 }
 
@@ -130,8 +132,12 @@ func (c *Checker) Check(ctx context.Context, toolName string, input map[string]a
 		}
 	}
 
-	// Layer 7: Mode default
-	behavior := DefaultBehaviorForTool(c.mode, toolName)
+	// Layer 7: Mode default (with MCP annotation awareness)
+	var annotations *MCPAnnotations
+	if c.toolAnnotationLookup != nil {
+		annotations = c.toolAnnotationLookup(toolName)
+	}
+	behavior := DefaultBehaviorForTool(c.mode, toolName, annotations)
 
 	// If mode default says "ask", try the user prompter
 	if behavior == BehaviorAsk {
@@ -164,17 +170,23 @@ func (c *Checker) firePermissionHook(ctx context.Context, toolName string, input
 	}
 
 	for _, hr := range results {
+		// Check for interrupt flag (stops the loop entirely)
+		interrupt := hr.Continue != nil && !*hr.Continue
+
 		switch hr.Decision {
 		case "allow":
-			return &agent.PermissionResult{Behavior: "allow"}, nil
+			return &agent.PermissionResult{Behavior: "allow", Interrupt: interrupt}, nil
 		case "deny":
 			msg := hr.Message
 			if msg == "" {
 				msg = "denied by hook"
 			}
-			return &agent.PermissionResult{Behavior: "deny", Message: msg}, nil
+			return &agent.PermissionResult{Behavior: "deny", Message: msg, Interrupt: interrupt}, nil
 		default:
 			// "" or "continue" — fall through
+			if interrupt {
+				return &agent.PermissionResult{Behavior: "deny", Message: "interrupted by hook", Interrupt: true}, nil
+			}
 			continue
 		}
 	}

@@ -99,7 +99,29 @@ func (a *Assembler) Assemble(config *agent.AgentConfig) string {
 		parts = append(parts, formatOutputStyleSection(config.OutputStyle))
 	}
 
-	// 21. User append (from SystemPromptConfig.Append)
+	// 21. File read limits (always)
+	parts = append(parts, loadSystemPrompt("system-prompt-file-read-limits.md"))
+
+	// 21b. Large file handling (always)
+	parts = append(parts, loadSystemPrompt("system-prompt-large-file-handling.md"))
+
+	// 21c. Verify assumptions (always)
+	parts = append(parts, loadSystemPrompt("system-prompt-use-tools-to-verify.md"))
+
+	// 21d. Environment details (always)
+	parts = append(parts, formatEnvironmentDetails(config))
+
+	// 22. Tool documentation (conditional: specific tools enabled)
+	for _, td := range toolDocs {
+		if toolEnabled(config, td.toolName) {
+			content := loadToolPrompt(td.promptFile)
+			if content != "" {
+				parts = append(parts, content)
+			}
+		}
+	}
+
+	// 23. User append (from SystemPromptConfig.Append)
 	if config.SystemPrompt.Append != "" {
 		parts = append(parts, config.SystemPrompt.Append)
 	}
@@ -152,6 +174,28 @@ func toolEnabled(config *agent.AgentConfig, name string) bool {
 	}
 	_, exists := config.ToolRegistry.Get(name)
 	return exists && !config.ToolRegistry.IsDisabled(name)
+}
+
+// toolDocEntry maps a tool name to its prompt documentation file.
+type toolDocEntry struct {
+	toolName   string
+	promptFile string
+}
+
+// toolDocs lists tools that have dedicated documentation to inject into the system prompt.
+var toolDocs = []toolDocEntry{
+	{"Glob", "tool-description-glob.md"},
+	{"Grep", "tool-description-grep.md"},
+	{"FileEdit", "tool-description-edit.md"},
+	{"Edit", "tool-description-edit.md"},
+	{"Read", "tool-description-readfile.md"},
+	{"FileRead", "tool-description-readfile.md"},
+	{"Write", "tool-description-write.md"},
+	{"FileWrite", "tool-description-write.md"},
+	{"Bash", "tool-description-bash.md"},
+	{"NotebookEdit", "tool-description-notebookedit.md"},
+	{"WebFetch", "tool-description-webfetch.md"},
+	{"WebSearch", "tool-description-websearch.md"},
 }
 
 // formatClaudeMDSection wraps CLAUDE.md content in a section header.

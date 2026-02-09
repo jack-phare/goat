@@ -7,9 +7,17 @@ import (
 	"os/exec"
 )
 
+// ProgressFunc is called with stdout/stderr lines during shell hook execution.
+type ProgressFunc func(stdout, stderr string)
+
 // ShellHookCallback creates a HookCallback that wraps a shell command.
 // The command receives hook input as JSON on stdin and returns HookJSONOutput as JSON on stdout.
 func ShellHookCallback(command string) HookCallback {
+	return ShellHookCallbackWithProgress(command, nil)
+}
+
+// ShellHookCallbackWithProgress creates a HookCallback with optional progress reporting.
+func ShellHookCallbackWithProgress(command string, onProgress ProgressFunc) HookCallback {
 	return func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
 		inputJSON, err := json.Marshal(input)
 		if err != nil {
@@ -20,11 +28,64 @@ func ShellHookCallback(command string) HookCallback {
 		cmd.Stdin = bytes.NewReader(inputJSON)
 
 		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
 
-		if err := cmd.Run(); err != nil {
-			return HookJSONOutput{}, err
+		if onProgress != nil {
+			// Use TeeReader to capture output while also reporting progress line-by-line
+			stdoutPipe, pipeErr := cmd.StdoutPipe()
+			if pipeErr != nil {
+				return HookJSONOutput{}, pipeErr
+			}
+			stderrPipe, pipeErr := cmd.StderrPipe()
+			if pipeErr != nil {
+				return HookJSONOutput{}, pipeErr
+			}
+
+			if err := cmd.Start(); err != nil {
+				return HookJSONOutput{}, err
+			}
+
+			// Read stderr in background
+			stderrDone := make(chan struct{})
+			go func() {
+				defer close(stderrDone)
+				buf := make([]byte, 4096)
+				for {
+					n, readErr := stderrPipe.Read(buf)
+					if n > 0 {
+						chunk := string(buf[:n])
+						stderr.WriteString(chunk)
+						onProgress("", chunk)
+					}
+					if readErr != nil {
+						break
+					}
+				}
+			}()
+
+			// Read stdout
+			buf := make([]byte, 4096)
+			for {
+				n, readErr := stdoutPipe.Read(buf)
+				if n > 0 {
+					chunk := string(buf[:n])
+					stdout.WriteString(chunk)
+					onProgress(chunk, "")
+				}
+				if readErr != nil {
+					break
+				}
+			}
+
+			<-stderrDone
+			if err := cmd.Wait(); err != nil {
+				return HookJSONOutput{}, err
+			}
+		} else {
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				return HookJSONOutput{}, err
+			}
 		}
 
 		outBytes := stdout.Bytes()

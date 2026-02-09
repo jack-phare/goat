@@ -1094,6 +1094,159 @@ func TestRunner_MultipleScopedHooks(t *testing.T) {
 	}
 }
 
+// --- Phase 4 Tests: Async, Progress, Interrupt ---
+
+func TestRunner_AsyncCallbackExecution(t *testing.T) {
+	// A Go callback that returns async first, then completes with a sync result
+	callCount := 0
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					callCount++
+					if callCount == 1 {
+						// First call: return async signal
+						return HookJSONOutput{Async: &AsyncHookJSONOutput{Async: true, AsyncTimeout: 5}}, nil
+					}
+					// Second call (executeAsync): return sync result
+					return HookJSONOutput{Sync: &SyncHookJSONOutput{Decision: "approve", Reason: "async done"}}, nil
+				}}},
+			},
+		},
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (initial + async re-execute), got %d", callCount)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Decision != "allow" {
+		t.Errorf("decision = %q, want 'allow' (mapped from 'approve')", results[0].Decision)
+	}
+	if results[0].Reason != "async done" {
+		t.Errorf("reason = %q, want 'async done'", results[0].Reason)
+	}
+}
+
+func TestRunner_AsyncShellExecution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell tests require unix shell")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "async_hook.sh")
+	stateFile := filepath.Join(dir, "state")
+	os.WriteFile(script, []byte(fmt.Sprintf(`#!/bin/sh
+cat > /dev/null
+if [ ! -f %s ]; then
+  touch %s
+  echo '{"async": true, "asyncTimeout": 5}'
+else
+  echo '{"decision":"approve","reason":"async completed"}'
+fi
+`, stateFile, stateFile)), 0o755)
+
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Commands: []string{script}},
+			},
+		},
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Decision != "allow" {
+		t.Errorf("decision = %q, want 'allow' (mapped from 'approve')", results[0].Decision)
+	}
+	if results[0].Reason != "async completed" {
+		t.Errorf("reason = %q, want 'async completed'", results[0].Reason)
+	}
+}
+
+func TestRunner_ProgressEmission(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell tests require unix shell")
+	}
+
+	ch := make(chan types.SDKMessage, 100)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "progress.sh")
+	os.WriteFile(script, []byte(`#!/bin/sh
+cat > /dev/null
+echo "progress line 1" >&2
+echo '{"decision":"approve"}'
+`), 0o755)
+
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Commands: []string{script}},
+			},
+		},
+		EmitChannel: ch,
+		SessionID:   "test-session",
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	close(ch)
+	var progressCount int
+	for msg := range ch {
+		if _, ok := msg.(*types.HookProgressMessage); ok {
+			progressCount++
+		}
+	}
+	// Should have at least one progress message (from stderr output)
+	if progressCount == 0 {
+		t.Error("expected at least one HookProgressMessage, got 0")
+	}
+}
+
+func TestRunner_AsyncCallbackError(t *testing.T) {
+	// Async callback that fails on re-execute
+	callCount := 0
+	r := NewRunner(RunnerConfig{
+		Hooks: map[types.HookEvent][]CallbackMatcher{
+			types.HookEventPreToolUse: {
+				{Hooks: []HookCallback{func(input any, toolUseID string, ctx context.Context) (HookJSONOutput, error) {
+					callCount++
+					if callCount == 1 {
+						return HookJSONOutput{Async: &AsyncHookJSONOutput{Async: true, AsyncTimeout: 1}}, nil
+					}
+					return HookJSONOutput{}, fmt.Errorf("async execution failed")
+				}}},
+			},
+		},
+	})
+
+	results, err := r.Fire(context.Background(), types.HookEventPreToolUse, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Async error is isolated — no results
+	if len(results) != 0 {
+		t.Errorf("expected 0 results (async failed), got %d", len(results))
+	}
+}
+
 func TestRunner_EmitChannelError(t *testing.T) {
 	ch := make(chan types.SDKMessage, 100)
 

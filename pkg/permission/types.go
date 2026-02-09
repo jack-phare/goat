@@ -78,4 +78,5 @@ type CheckerConfig struct {
 	HookRunner                      agent.HookRunner // for PermissionRequest hook
 	CanUseTool                      types.CanUseToolFunc
 	UserPrompter                    UserPrompter
+	ToolAnnotationLookup            func(string) *MCPAnnotations // optional: resolves MCP annotations for a tool name
 }

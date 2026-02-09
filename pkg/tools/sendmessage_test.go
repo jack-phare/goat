@@ -189,6 +189,72 @@ func TestSendMessageToolName(t *testing.T) {
 	}
 }
 
+func TestSendMessageToolPlanApprovalRequest(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
+
+	var sentMsg TeamMessage
+	tool := &SendMessageTool{
+		Coordinator: &mockTeamCoordinator{
+			sendMessageFn: func(_ context.Context, msg TeamMessage) error {
+				sentMsg = msg
+				return nil
+			},
+		},
+	}
+
+	output, _ := tool.Execute(context.Background(), map[string]any{
+		"type":      "plan_approval_request",
+		"recipient": "lead",
+		"content":   "Please approve the implementation plan",
+	})
+	if output.IsError {
+		t.Fatalf("unexpected error: %s", output.Content)
+	}
+	if sentMsg.Type != "plan_approval_request" {
+		t.Errorf("expected plan_approval_request, got %s", sentMsg.Type)
+	}
+	if sentMsg.To != "lead" {
+		t.Errorf("expected lead, got %s", sentMsg.To)
+	}
+	if sentMsg.Content != "Please approve the implementation plan" {
+		t.Errorf("unexpected content: %s", sentMsg.Content)
+	}
+}
+
+func TestSendMessageToolPlanApprovalResponse(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
+
+	var sentMsg TeamMessage
+	tool := &SendMessageTool{
+		Coordinator: &mockTeamCoordinator{
+			sendMessageFn: func(_ context.Context, msg TeamMessage) error {
+				sentMsg = msg
+				return nil
+			},
+		},
+	}
+
+	output, _ := tool.Execute(context.Background(), map[string]any{
+		"type":       "plan_approval_response",
+		"recipient":  "worker-1",
+		"content":    "Plan approved",
+		"request_id": "plan-req-1",
+		"approve":    true,
+	})
+	if output.IsError {
+		t.Fatalf("unexpected error: %s", output.Content)
+	}
+	if sentMsg.Type != "plan_approval_response" {
+		t.Errorf("expected plan_approval_response, got %s", sentMsg.Type)
+	}
+	if !sentMsg.Approve {
+		t.Error("expected approve=true")
+	}
+	if sentMsg.RequestID != "plan-req-1" {
+		t.Errorf("expected plan-req-1, got %s", sentMsg.RequestID)
+	}
+}
+
 func TestSendMessageToolShutdownResponse(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
 

@@ -259,7 +259,8 @@ func TestIntegrationDelegateMode(t *testing.T) {
 
 	allTools := []string{
 		"TeamCreate", "SendMessage", "TeamDelete",
-		"TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+		"TaskCreate", "TaskUpdate", "TaskList",
+		"AskUserQuestion",
 		"Bash", "Read", "Write", "Edit", "Glob", "Grep",
 		"WebFetch", "Agent",
 	}
@@ -273,8 +274,8 @@ func TestIntegrationDelegateMode(t *testing.T) {
 	// Enable delegate mode
 	d.Enable()
 	filtered = d.FilterTools(allTools)
-	if len(filtered) != 7 {
-		t.Errorf("expected 7 delegate tools, got %d: %v", len(filtered), filtered)
+	if len(filtered) != len(DelegateModeTools) {
+		t.Errorf("expected %d delegate tools, got %d: %v", len(DelegateModeTools), len(filtered), filtered)
 	}
 
 	// Disable delegate mode

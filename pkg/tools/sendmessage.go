@@ -22,7 +22,7 @@ func (s *SendMessageTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"type": map[string]any{
 				"type":        "string",
-				"enum":        []string{"message", "broadcast", "shutdown_request", "shutdown_response", "plan_approval_response"},
+				"enum":        []string{"message", "broadcast", "shutdown_request", "shutdown_response", "plan_approval_request", "plan_approval_response"},
 				"description": "Message type",
 			},
 			"recipient": map[string]any{

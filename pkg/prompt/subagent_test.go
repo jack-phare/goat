@@ -104,6 +104,39 @@ func TestAssembleSubagentPrompt_EmptyPrompt(t *testing.T) {
 	mustContain(t, result, "Environment")
 }
 
+func TestAssembleSubagentPrompt_WithSkills(t *testing.T) {
+	agentDef := types.AgentDefinition{
+		Prompt: "Agent with skills",
+		Skills: []string{"skill-debugging.md"},
+	}
+	parentConfig := &agent.AgentConfig{CWD: "/tmp", OS: "darwin", Shell: "/bin/zsh"}
+
+	result := AssembleSubagentPrompt(agentDef, parentConfig)
+	mustContain(t, result, "Agent with skills")
+	// The skill file should be loaded and included (if it exists and has content)
+	skillContent := loadSkillPrompt("skill-debugging.md")
+	if skillContent != "" {
+		mustContain(t, result, skillContent[:20]) // check first 20 chars of skill content
+	}
+}
+
+func TestAssembleSubagentPrompt_WithCriticalReminder(t *testing.T) {
+	agentDef := types.AgentDefinition{
+		Prompt:           "Base prompt",
+		CriticalReminder: "Never reveal secrets",
+	}
+	parentConfig := &agent.AgentConfig{CWD: "/tmp", OS: "linux", Shell: "/bin/sh"}
+
+	result := AssembleSubagentPrompt(agentDef, parentConfig)
+	mustContain(t, result, "CRITICAL REMINDER: Never reveal secrets")
+	// Critical reminder should come before the main prompt
+	idxCritical := strings.Index(result, "CRITICAL REMINDER")
+	idxPrompt := strings.Index(result, "Base prompt")
+	if idxCritical >= idxPrompt {
+		t.Error("critical reminder should come before the base prompt")
+	}
+}
+
 func TestFormatEnvironmentDetails(t *testing.T) {
 	config := &agent.AgentConfig{
 		CWD:   "/home/user/project",
@@ -116,4 +149,20 @@ func TestFormatEnvironmentDetails(t *testing.T) {
 	mustContain(t, result, "Working directory: /home/user/project")
 	mustContain(t, result, "Platform: linux")
 	mustContain(t, result, "Shell: /bin/bash")
+}
+
+func TestFormatEnvironmentDetails_WithOSVersionAndDate(t *testing.T) {
+	config := &agent.AgentConfig{
+		CWD:         "/tmp",
+		OS:          "darwin",
+		OSVersion:   "Darwin 25.2.0",
+		CurrentDate: "2026-02-09",
+		Shell:       "/bin/zsh",
+	}
+
+	result := formatEnvironmentDetails(config)
+	mustContain(t, result, "OS Version: Darwin 25.2.0")
+	mustContain(t, result, "The current date is: 2026-02-09")
+	mustContain(t, result, "Platform: darwin")
+	mustContain(t, result, "Shell: /bin/zsh")
 }

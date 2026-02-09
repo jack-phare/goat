@@ -30,6 +30,14 @@ func RunLoop(ctx context.Context, prompt string, config AgentConfig) *Query {
 		cancel:   cancel,
 	}
 
+	// Set up multi-turn channels if enabled
+	if config.MultiTurn {
+		q.inputCh = make(chan []byte, 16)
+		q.controlCh = make(chan types.ControlRequest, 4)
+		q.controlResp = make(chan types.ControlResponse, 1)
+		q.closeCh = make(chan struct{})
+	}
+
 	go runLoop(loopCtx, prompt, &config, state, ch, q)
 
 	return q
@@ -76,6 +84,11 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 
 	// 5. Main loop
 	for {
+		// Process any pending control requests (non-blocking)
+		if config.MultiTurn {
+			processControlRequests(config, state, q)
+		}
+
 		// Check termination conditions
 		if reason := checkTermination(ctx, config, state); reason != "" {
 			state.ExitReason = reason
@@ -111,11 +124,25 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			state.PendingAdditionalContext = nil // clear after consumption
 		}
 
+		// Use dynamic model from LoopState if set, otherwise config
+		model := config.Model
+		if state.Model != "" {
+			model = state.Model
+		}
+
+		// Resolve MaxThinkingTokens: state override > config > default (0)
+		maxThinkingTokens := 0
+		if state.MaxThinkingTokens > 0 {
+			maxThinkingTokens = state.MaxThinkingTokens
+		} else if config.MaxThinkingTkns != nil {
+			maxThinkingTokens = *config.MaxThinkingTkns
+		}
+
 		req := llm.BuildCompletionRequest(
 			llm.ClientConfig{
-				Model:             config.Model,
+				Model:             model,
 				MaxTokens:         16384,
-				MaxThinkingTokens: 0,
+				MaxThinkingTokens: maxThinkingTokens,
 			},
 			effectivePrompt,
 			state.Messages,
@@ -198,10 +225,27 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 				collectAdditionalContext(state, stopResults)
 				continue
 			}
+
+			if config.MultiTurn {
+				// Multi-turn: emit per-turn result, then wait for more input
+				emitTurnResult(ch, state, startTime, apiDuration)
+
+				// Wait for next user message or close
+				if waitForInput(ctx, config, state, ch, q) {
+					continue // got new input, continue the loop
+				}
+				// waitForInput returned false → close/interrupt/context cancelled
+				state.ExitReason = ExitEndTurn
+				goto done
+			}
+
 			state.ExitReason = ExitEndTurn
 			goto done
 
 		case "max_tokens":
+			// Discard any truncated tool_use blocks with incomplete JSON
+			discardTruncatedToolBlocks(resp)
+
 			// Check if compaction can help
 			budget := calculateTokenBudget(config, state, systemPrompt)
 			if config.Compactor.ShouldCompact(budget) {
@@ -250,6 +294,11 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 
 			continue
 
+		case "stop_sequence":
+			state.ExitReason = ExitStopSequence
+			state.StopSequence = resp.StopSequence
+			goto done
+
 		default:
 			// Unknown stop reason — treat as end_turn
 			state.ExitReason = ExitEndTurn
@@ -268,6 +317,133 @@ done:
 	config.Hooks.Fire(ctx, types.HookEventSessionEnd, map[string]any{
 		"reason": string(state.ExitReason),
 	})
+}
+
+// waitForInput blocks until the user sends a new message, a control request arrives,
+// or the query is closed. Returns true if the loop should continue with new input.
+func waitForInput(ctx context.Context, config *AgentConfig, state *LoopState, ch chan<- types.SDKMessage, q *Query) bool {
+	for {
+		select {
+		case msg, ok := <-q.inputCh:
+			if !ok {
+				return false // input channel closed
+			}
+			// Append user message to conversation
+			userMsg := llm.ChatMessage{Role: "user", Content: string(msg)}
+			state.Messages = append(state.Messages, userMsg)
+			persistMessage(config.SessionStore, state.SessionID, userMsg)
+			return true
+
+		case req := <-q.controlCh:
+			// Process control request and send response
+			resp := dispatchControl(config, state, q, req)
+			q.controlResp <- resp
+
+			// Check if the control request caused an interrupt
+			if state.IsInterrupted {
+				return false
+			}
+			// After control, continue waiting for input
+			continue
+
+		case <-q.closeCh:
+			return false
+
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+// processControlRequests drains any pending control requests (non-blocking).
+func processControlRequests(config *AgentConfig, state *LoopState, q *Query) {
+	for {
+		select {
+		case req := <-q.controlCh:
+			resp := dispatchControl(config, state, q, req)
+			q.controlResp <- resp
+		default:
+			return
+		}
+	}
+}
+
+// dispatchControl handles a single control request and returns the response.
+func dispatchControl(config *AgentConfig, state *LoopState, q *Query, req types.ControlRequest) types.ControlResponse {
+	switch req.Request.Subtype {
+	case types.ControlSubtypeInterrupt:
+		q.mu.Lock()
+		state.IsInterrupted = true
+		q.mu.Unlock()
+		q.cancel()
+		return types.ControlResponse{
+			Type:     "control_response",
+			Response: types.ControlSuccessResponse{RequestID: req.RequestID},
+		}
+
+	case types.ControlSubtypeSetModel:
+		model := req.Request.Model
+		if model == "" {
+			return types.ControlResponse{
+				Type: "control_response",
+				Response: types.ControlErrorResponse{
+					RequestID: req.RequestID,
+					Error:     "model is required",
+				},
+			}
+		}
+		q.mu.Lock()
+		state.Model = model
+		q.mu.Unlock()
+		return types.ControlResponse{
+			Type:     "control_response",
+			Response: types.ControlSuccessResponse{RequestID: req.RequestID, Result: model},
+		}
+
+	case types.ControlSubtypeSetPermissionMode:
+		mode := req.Request.Mode
+		if mode == "" {
+			return types.ControlResponse{
+				Type: "control_response",
+				Response: types.ControlErrorResponse{
+					RequestID: req.RequestID,
+					Error:     "mode is required",
+				},
+			}
+		}
+		config.PermissionMode = mode
+		return types.ControlResponse{
+			Type:     "control_response",
+			Response: types.ControlSuccessResponse{RequestID: req.RequestID, Result: string(mode)},
+		}
+
+	case types.ControlSubtypeSetMaxThinkingTokens:
+		if req.Request.MaxThinkingTokens == nil {
+			return types.ControlResponse{
+				Type: "control_response",
+				Response: types.ControlErrorResponse{
+					RequestID: req.RequestID,
+					Error:     "max_thinking_tokens is required",
+				},
+			}
+		}
+		q.mu.Lock()
+		state.MaxThinkingTokens = *req.Request.MaxThinkingTokens
+		q.mu.Unlock()
+		return types.ControlResponse{
+			Type:     "control_response",
+			Response: types.ControlSuccessResponse{RequestID: req.RequestID, Result: *req.Request.MaxThinkingTokens},
+		}
+
+	default:
+		return types.ControlResponse{
+			Type: "control_response",
+			Response: types.ControlErrorResponse{
+				RequestID: req.RequestID,
+				Error:     "unknown control subtype: " + req.Request.Subtype,
+			},
+		}
+	}
 }
 
 // shouldContinue checks if any hook result has Continue=true.
@@ -397,6 +573,10 @@ func finalizeSession(config *AgentConfig, state *LoopState) {
 		m.MessageCount = len(state.Messages)
 		m.TurnCount = state.TurnCount
 		m.TotalCostUSD = state.TotalCostUSD
+		m.ExitReason = string(state.ExitReason)
+		if config.AgentName != "" {
+			m.AgentName = config.AgentName
+		}
 	})
 }
 

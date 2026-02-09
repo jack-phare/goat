@@ -58,3 +58,20 @@ func extractToolUseBlocks(resp *llm.CompletionResponse) []types.ContentBlock {
 	}
 	return blocks
 }
+
+// discardTruncatedToolBlocks removes tool_use blocks with incomplete JSON arguments
+// from a max_tokens response. This prevents executing tools with partially-formed input.
+func discardTruncatedToolBlocks(resp *llm.CompletionResponse) {
+	var clean []types.ContentBlock
+	for _, b := range resp.Content {
+		if b.Type == "tool_use" {
+			// Validate the Input by attempting a round-trip marshal
+			data, err := json.Marshal(b.Input)
+			if err != nil || !json.Valid(data) {
+				continue // discard incomplete tool_use
+			}
+		}
+		clean = append(clean, b)
+	}
+	resp.Content = clean
+}

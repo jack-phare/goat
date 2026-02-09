@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	gopdf "github.com/ledongthuc/pdf"
 )
 
 const (
 	fileReadDefaultLimit   = 2000 // default max lines to read
 	fileReadMaxLineLength  = 2000 // truncate lines longer than this
+	fileReadMaxPDFPages    = 20   // max pages per PDF read
 )
 
 // FileReadTool reads file contents with line numbers.
@@ -39,6 +43,10 @@ func (f *FileReadTool) InputSchema() map[string]any {
 				"type":        "number",
 				"description": "The number of lines to read",
 			},
+			"pages": map[string]any{
+				"type":        "string",
+				"description": "Page range for PDF files (e.g. \"1-5\", \"3\", \"10-20\"). Max 20 pages per request.",
+			},
 		},
 		"required": []string{"file_path"},
 	}
@@ -54,6 +62,11 @@ func (f *FileReadTool) Execute(_ context.Context, input map[string]any) (ToolOut
 
 	if !filepath.IsAbs(filePath) {
 		return ToolOutput{Content: "Error: file_path must be an absolute path", IsError: true}, nil
+	}
+
+	// Handle PDF files
+	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
+		return f.readPDF(filePath, input)
 	}
 
 	file, err := os.Open(filePath)
@@ -103,4 +116,105 @@ func (f *FileReadTool) Execute(_ context.Context, input map[string]any) (ToolOut
 	}
 
 	return ToolOutput{Content: strings.Join(lines, "\n")}, nil
+}
+
+// readPDF extracts text from a PDF file with optional page range.
+func (f *FileReadTool) readPDF(filePath string, input map[string]any) (ToolOutput, error) {
+	pdfFile, reader, err := gopdf.Open(filePath)
+	if err != nil {
+		return ToolOutput{Content: fmt.Sprintf("Error opening PDF: %s", err), IsError: true}, nil
+	}
+	defer pdfFile.Close()
+
+	totalPages := reader.NumPage()
+	if totalPages == 0 {
+		return ToolOutput{Content: "(empty PDF)"}, nil
+	}
+
+	startPage, endPage := 1, totalPages
+
+	if pagesStr, ok := input["pages"].(string); ok && pagesStr != "" {
+		s, e, parseErr := parsePDFPageRange(pagesStr, totalPages)
+		if parseErr != nil {
+			return ToolOutput{Content: fmt.Sprintf("Error: %s", parseErr), IsError: true}, nil
+		}
+		startPage, endPage = s, e
+	} else if totalPages > fileReadMaxPDFPages {
+		return ToolOutput{
+			Content: fmt.Sprintf("Error: PDF has %d pages (max %d). Use the 'pages' parameter to specify a page range (e.g. \"1-5\").", totalPages, fileReadMaxPDFPages),
+			IsError: true,
+		}, nil
+	}
+
+	pageCount := endPage - startPage + 1
+	if pageCount > fileReadMaxPDFPages {
+		return ToolOutput{
+			Content: fmt.Sprintf("Error: requested %d pages (max %d per request)", pageCount, fileReadMaxPDFPages),
+			IsError: true,
+		}, nil
+	}
+
+	var b strings.Builder
+	lineNum := 0
+	for p := startPage; p <= endPage; p++ {
+		page := reader.Page(p)
+		if page.V.IsNull() {
+			continue
+		}
+
+		text, extractErr := page.GetPlainText(nil)
+		if extractErr != nil {
+			b.WriteString(fmt.Sprintf("[Page %d: error extracting text: %s]\n", p, extractErr))
+			continue
+		}
+
+		// Number each line within the page
+		for _, line := range strings.Split(text, "\n") {
+			lineNum++
+			if len(line) > fileReadMaxLineLength {
+				line = line[:fileReadMaxLineLength]
+			}
+			b.WriteString(fmt.Sprintf("%6d\t%s\n", lineNum, line))
+		}
+	}
+
+	if b.Len() == 0 {
+		return ToolOutput{Content: "(no text extracted from PDF)"}, nil
+	}
+
+	return ToolOutput{Content: strings.TrimRight(b.String(), "\n")}, nil
+}
+
+// parsePDFPageRange parses a page range string like "1-5", "3", or "10-20".
+func parsePDFPageRange(pages string, totalPages int) (start, end int, err error) {
+	pages = strings.TrimSpace(pages)
+
+	if strings.Contains(pages, "-") {
+		parts := strings.SplitN(pages, "-", 2)
+		start, err = strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid page range start: %s", parts[0])
+		}
+		end, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid page range end: %s", parts[1])
+		}
+	} else {
+		start, err = strconv.Atoi(pages)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid page number: %s", pages)
+		}
+		end = start
+	}
+
+	if start < 1 {
+		start = 1
+	}
+	if end > totalPages {
+		end = totalPages
+	}
+	if start > end {
+		return 0, 0, fmt.Errorf("invalid page range: %d-%d", start, end)
+	}
+	return start, end, nil
 }

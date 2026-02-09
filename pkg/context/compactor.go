@@ -71,6 +71,12 @@ func (c *Compactor) ShouldCompact(budget agent.TokenBudget) bool {
 	return budget.UtilizationPct() > c.thresholdPct
 }
 
+// MustCompact returns true if the context utilization exceeds the critical threshold (0.95).
+// This is used for mandatory compaction on max_tokens stop reason.
+func (c *Compactor) MustCompact(budget agent.TokenBudget) bool {
+	return budget.UtilizationPct() > c.criticalPct
+}
+
 // Compact summarizes older messages, keeping the most recent messages verbatim.
 // On summary generation failure, it falls back to simple truncation.
 func (c *Compactor) Compact(ctx context.Context, req agent.CompactRequest) ([]llm.ChatMessage, error) {
@@ -78,11 +84,22 @@ func (c *Compactor) Compact(ctx context.Context, req agent.CompactRequest) ([]ll
 		return req.Messages, nil
 	}
 
-	// 1. Fire PreCompact hook
+	// 1. Fire PreCompact hook and capture custom instructions
+	var customInstructions *string
 	if c.hooks != nil {
-		c.hooks.Fire(ctx, types.HookEventPreCompact, map[string]any{
+		results, _ := c.hooks.Fire(ctx, types.HookEventPreCompact, map[string]any{
 			"trigger": req.Trigger,
 		})
+		for _, hr := range results {
+			if hr.HookSpecificOutput != nil {
+				if output, ok := hr.HookSpecificOutput.(map[string]any); ok {
+					if ci, ok := output["custom_instructions"].(string); ok && ci != "" {
+						customInstructions = &ci
+						break
+					}
+				}
+			}
+		}
 	}
 
 	// 2. Record pre-compaction token count
@@ -103,7 +120,7 @@ func (c *Compactor) Compact(ctx context.Context, req agent.CompactRequest) ([]ll
 	// 4. Generate summary via LLM call
 	var compacted []llm.ChatMessage
 	if c.client != nil {
-		summary, err := generateSummary(ctx, compactZone, c.client, c.summaryModel, nil)
+		summary, err := generateSummary(ctx, compactZone, c.client, c.summaryModel, customInstructions)
 		if err != nil {
 			// Fallback: simple truncation (drop oldest messages)
 			compacted = preserveZone

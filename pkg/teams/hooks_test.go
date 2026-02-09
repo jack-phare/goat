@@ -184,3 +184,153 @@ func TestShouldPreventCompletion(t *testing.T) {
 		t.Error("expected false for normal result")
 	}
 }
+
+func TestCompleteTaskWithHook(t *testing.T) {
+	runner := hooks.NewRunner(hooks.RunnerConfig{})
+	tm := NewTeamManager(runner, t.TempDir())
+	ctx := context.Background()
+
+	team, err := tm.CreateTeam(ctx, "complete-hook")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+
+	// Create and claim a task
+	team.Tasks.Create(TeamTask{ID: "ch-1", Subject: "Build feature", CreatedBy: "lead"})
+	team.Tasks.Claim("ch-1", "alice")
+
+	// Complete via hook-aware method (no hooks registered → completes normally)
+	feedback, err := tm.CompleteTask(ctx, "ch-1", "alice")
+	if err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	if feedback != "" {
+		t.Errorf("expected empty feedback, got %q", feedback)
+	}
+
+	// Verify task is completed
+	tasks, _ := team.Tasks.List()
+	for _, task := range tasks {
+		if task.ID == "ch-1" && task.Status != TaskCompleted {
+			t.Errorf("task status = %s, want completed", task.Status)
+		}
+	}
+}
+
+func TestCompleteTaskHookPreventsCompletion(t *testing.T) {
+	f := false
+	runner := hooks.NewRunner(hooks.RunnerConfig{
+		Hooks: map[types.HookEvent][]hooks.CallbackMatcher{
+			types.HookEventTaskCompleted: {
+				{
+					Hooks: []hooks.HookCallback{
+						func(_ any, _ string, _ context.Context) (hooks.HookJSONOutput, error) {
+							return hooks.HookJSONOutput{
+								Sync: &hooks.SyncHookJSONOutput{
+									Continue: &f,
+									Reason:   "Tests are failing",
+								},
+							}, nil
+						},
+					},
+				},
+			},
+		},
+	})
+
+	tm := NewTeamManager(runner, t.TempDir())
+	ctx := context.Background()
+
+	team, _ := tm.CreateTeam(ctx, "prevent-complete")
+	team.Tasks.Create(TeamTask{ID: "pc-1", Subject: "Deploy", CreatedBy: "lead"})
+	team.Tasks.Claim("pc-1", "bob")
+
+	feedback, err := tm.CompleteTask(ctx, "pc-1", "bob")
+	if err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	if feedback != "Tests are failing" {
+		t.Errorf("feedback = %q, want 'Tests are failing'", feedback)
+	}
+
+	// Verify task is NOT completed (still in_progress)
+	tasks, _ := team.Tasks.List()
+	for _, task := range tasks {
+		if task.ID == "pc-1" && task.Status == TaskCompleted {
+			t.Error("task should not have been completed")
+		}
+	}
+}
+
+func TestCompleteTaskNoTeam(t *testing.T) {
+	tm := NewTeamManager(&agent.NoOpHookRunner{}, t.TempDir())
+	_, err := tm.CompleteTask(context.Background(), "task-1", "worker")
+	if err == nil {
+		t.Fatal("expected error with no active team")
+	}
+}
+
+func TestCheckIdle(t *testing.T) {
+	runner := hooks.NewRunner(hooks.RunnerConfig{})
+	tm := NewTeamManager(runner, t.TempDir())
+	tm.CreateTeam(context.Background(), "idle-check")
+
+	// No hooks → don't keep working
+	keepWorking, feedback, err := tm.CheckIdle(context.Background(), "worker")
+	if err != nil {
+		t.Fatalf("CheckIdle: %v", err)
+	}
+	if keepWorking {
+		t.Error("expected keepWorking=false with no hooks")
+	}
+	if feedback != "" {
+		t.Errorf("expected empty feedback, got %q", feedback)
+	}
+}
+
+func TestCheckIdleKeepWorking(t *testing.T) {
+	f := false
+	runner := hooks.NewRunner(hooks.RunnerConfig{
+		Hooks: map[types.HookEvent][]hooks.CallbackMatcher{
+			types.HookEventTeammateIdle: {
+				{
+					Hooks: []hooks.HookCallback{
+						func(_ any, _ string, _ context.Context) (hooks.HookJSONOutput, error) {
+							return hooks.HookJSONOutput{
+								Sync: &hooks.SyncHookJSONOutput{
+									Continue: &f,
+									Reason:   "More tasks in queue",
+								},
+							}, nil
+						},
+					},
+				},
+			},
+		},
+	})
+
+	tm := NewTeamManager(runner, t.TempDir())
+	tm.CreateTeam(context.Background(), "idle-keep")
+
+	keepWorking, feedback, err := tm.CheckIdle(context.Background(), "worker")
+	if err != nil {
+		t.Fatalf("CheckIdle: %v", err)
+	}
+	if !keepWorking {
+		t.Error("expected keepWorking=true when hook says continue=false with message")
+	}
+	if feedback != "More tasks in queue" {
+		t.Errorf("feedback = %q, want 'More tasks in queue'", feedback)
+	}
+}
+
+func TestCheckIdleNilHooks(t *testing.T) {
+	tm := NewTeamManager(nil, t.TempDir())
+	keepWorking, _, err := tm.CheckIdle(context.Background(), "worker")
+	if err != nil {
+		t.Fatalf("CheckIdle: %v", err)
+	}
+	if keepWorking {
+		t.Error("expected keepWorking=false with nil hooks")
+	}
+}

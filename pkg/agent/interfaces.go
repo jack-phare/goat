@@ -132,6 +132,9 @@ type SessionMetadata struct {
 	TurnCount        int       `json:"turn_count"`
 	TotalCostUSD     float64   `json:"total_cost_usd"`
 	LeafTitle        string    `json:"leaf_title,omitempty"`
+	ProjectHash      string    `json:"project_hash,omitempty"`
+	ExitReason       string    `json:"exit_reason,omitempty"`
+	AgentName        string    `json:"agent_name,omitempty"`
 }
 
 // SessionState is the loaded form of a session: metadata + messages.

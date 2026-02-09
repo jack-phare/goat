@@ -35,6 +35,7 @@ type ResultSubtype string
 
 const (
 	ResultSubtypeSuccess                   ResultSubtype = "success"
+	ResultSubtypeSuccessTurn               ResultSubtype = "success_turn" // per-turn result in multi-turn mode
 	ResultSubtypeErrorDuringExecution      ResultSubtype = "error_during_execution"
 	ResultSubtypeErrorMaxTurns             ResultSubtype = "error_max_turns"
 	ResultSubtypeErrorMaxBudget            ResultSubtype = "error_max_budget_usd"

@@ -3,6 +3,8 @@ package subagent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ const maxConcurrentAgents = 10
 // ManagerOpts configures a Manager.
 type ManagerOpts struct {
 	TranscriptDir     string
+	OutputDir         string // directory for background agent output files
 	ParentConfig      *agent.AgentConfig
 	HookRunner        *hooks.Runner
 	LLMClient         llm.Client
@@ -28,6 +31,8 @@ type ManagerOpts struct {
 	PermissionChecker agent.PermissionChecker
 	CostTracker       *llm.CostTracker
 	ParentRegistry    *tools.Registry
+	TaskRestriction   *TaskRestriction // limits which agent types can be spawned
+	SessionStore      agent.SessionStore // pass to subagents for transcript persistence
 }
 
 // Manager creates, tracks, and controls subagent instances.
@@ -75,6 +80,14 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 		return tools.AgentResult{}, fmt.Errorf("unknown agent type %q", input.SubagentType)
 	}
 
+	// 2b. Enforce task restriction
+	if r := m.opts.TaskRestriction; r != nil && !r.Unrestricted {
+		allowed := toSet(r.AllowedTypes)
+		if !allowed[input.SubagentType] {
+			return tools.AgentResult{}, fmt.Errorf("agent type %q not allowed by task restriction (allowed: %v)", input.SubagentType, r.AllowedTypes)
+		}
+	}
+
 	// 3. Generate ID (or use resume ID)
 	agentID := uuid.New().String()
 	if input.Resume != nil && *input.Resume != "" {
@@ -120,13 +133,15 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 		ensureMemoryDir(memDir)
 		content, _ := loadMemoryContent(memDir)
 		memoryContent = content
+		// Ensure file tools are available when memory is enabled
+		toolNames = ensureTools(toolNames, "FileRead", "FileWrite", "FileEdit")
 	}
 
 	// 9. Build system prompt
 	systemPrompt := m.buildSystemPrompt(def, input, memoryContent)
 
 	// 10. Build config
-	maxTurns := 100
+	maxTurns := 50
 	if input.MaxTurns != nil {
 		maxTurns = *input.MaxTurns
 	} else if def.MaxTurns != nil {
@@ -150,6 +165,7 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 		Hooks:             m.resolveHooks(),
 		Compactor:         &agent.NoOpCompactor{},
 		CostTracker:       m.opts.CostTracker,
+		SessionStore:      m.resolveSessionStore(),
 	}
 
 	// 11. Build scoped tool registry
@@ -161,16 +177,24 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 		m.opts.HookRunner.RegisterScoped(agentID, scopedMatchers)
 	}
 
+	// Build transcript path if session store is configured
+	var transcriptPath string
+	if m.opts.SessionStore != nil && m.opts.TranscriptDir != "" {
+		os.MkdirAll(m.opts.TranscriptDir, 0o755)
+		transcriptPath = filepath.Join(m.opts.TranscriptDir, "agent-"+agentID+".jsonl")
+	}
+
 	// Create RunningAgent
 	ra := &RunningAgent{
-		ID:         agentID,
-		Type:       input.SubagentType,
-		Name:       m.resolveDisplayName(def, input),
-		Definition: def,
-		State:      StateRunning,
-		StartedAt:  time.Now(),
-		Output:     &AgentOutput{},
-		Done:       make(chan struct{}),
+		ID:             agentID,
+		Type:           input.SubagentType,
+		Name:           m.resolveDisplayName(def, input),
+		Definition:     def,
+		State:          StateRunning,
+		StartedAt:      time.Now(),
+		Output:         &AgentOutput{},
+		TranscriptPath: transcriptPath,
+		Done:           make(chan struct{}),
 		cleanupFn: func() {
 			if m.opts.HookRunner != nil {
 				m.opts.HookRunner.UnregisterScoped(agentID)
@@ -187,9 +211,13 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 	ra.Cancel = func() { query.Interrupt() }
 
 	if isBackground {
+		// Create output file for background agents
+		outputFilePath := m.createOutputFile(agentID)
+		ra.OutputFile = outputFilePath
+
 		// Background: launch goroutine, return immediately
 		go m.drainAndFinish(query, ra)
-		return tools.AgentResult{AgentID: agentID}, nil
+		return tools.AgentResult{AgentID: agentID, OutputFile: outputFilePath}, nil
 	}
 
 	// Foreground: block until complete
@@ -327,6 +355,8 @@ func (m *Manager) Definitions() map[string]Definition {
 
 func (m *Manager) drainAndFinish(query *agent.Query, ra *RunningAgent) {
 	output := m.drainQuery(query)
+	// Write output file before finishAgent closes Done channel
+	writeOutputFile(ra.OutputFile, output)
 	m.finishAgent(ra, query, output)
 }
 
@@ -392,9 +422,10 @@ func (m *Manager) finishAgent(ra *RunningAgent, query *agent.Query, output strin
 			BaseHookInput: hooks.BaseHookInput{
 				SessionID: m.parentSessionID(),
 			},
-			HookEventName: "SubagentStop",
-			AgentID:       ra.ID,
-			AgentType:     ra.Type,
+			HookEventName:       "SubagentStop",
+			AgentID:             ra.ID,
+			AgentType:           ra.Type,
+			AgentTranscriptPath: ra.TranscriptPath,
 		})
 	}
 }
@@ -447,6 +478,10 @@ func (m *Manager) resolveDisplayName(def Definition, input tools.AgentInput) str
 }
 
 func (m *Manager) resolvePermissionMode(def Definition, input tools.AgentInput) types.PermissionMode {
+	// If parent uses bypassPermissions, subagent inherits it unconditionally
+	if m.opts.ParentConfig != nil && m.opts.ParentConfig.PermissionMode == types.PermissionModeBypassPermissions {
+		return types.PermissionModeBypassPermissions
+	}
 	if input.Mode != nil && *input.Mode != "" {
 		return types.PermissionMode(*input.Mode)
 	}
@@ -459,15 +494,41 @@ func (m *Manager) resolvePermissionMode(def Definition, input tools.AgentInput) 
 	return types.PermissionModeDefault
 }
 
+// backgroundPreApprovedTools is the set of tools auto-allowed for background agents.
+// These are read-only tools and tools that don't require user interaction.
+var backgroundPreApprovedTools = map[string]bool{
+	"Read":         true,
+	"FileRead":     true,
+	"Glob":         true,
+	"Grep":         true,
+	"Bash":         true,
+	"Write":        true,
+	"FileWrite":    true,
+	"Edit":         true,
+	"FileEdit":     true,
+	"WebFetch":     true,
+	"WebSearch":    true,
+	"NotebookEdit": true,
+	"TodoWrite":    true,
+	"Config":       true,
+}
+
 func (m *Manager) resolvePermissions(isBackground bool) agent.PermissionChecker {
 	if isBackground {
-		// Background agents auto-deny unpermitted tools
-		return &agent.AllowAllChecker{}
+		// Background agents deny tools not in the pre-approved set
+		return &agent.BackgroundPermissionChecker{PreApproved: backgroundPreApprovedTools}
 	}
 	if m.opts.PermissionChecker != nil {
 		return m.opts.PermissionChecker
 	}
 	return &agent.AllowAllChecker{}
+}
+
+func (m *Manager) resolveSessionStore() agent.SessionStore {
+	if m.opts.SessionStore != nil {
+		return m.opts.SessionStore
+	}
+	return nil
 }
 
 func (m *Manager) resolveHooks() agent.HookRunner {
@@ -523,6 +584,25 @@ func (m *Manager) buildSystemPrompt(def Definition, input tools.AgentInput, memo
 	}
 
 	return systemPrompt
+}
+
+// createOutputFile creates an output file for a background agent.
+// Returns the file path, or empty string if output dir is not set.
+func (m *Manager) createOutputFile(agentID string) string {
+	dir := m.opts.OutputDir
+	if dir == "" {
+		return ""
+	}
+	os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, agentID+".output")
+}
+
+// writeOutputFile writes content to the agent's output file.
+func writeOutputFile(path, content string) {
+	if path == "" {
+		return
+	}
+	os.WriteFile(path, []byte(content), 0o644)
 }
 
 // convertHooks converts types.HookCallbackMatcher entries to hooks.CallbackMatcher entries.

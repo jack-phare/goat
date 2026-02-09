@@ -724,3 +724,72 @@ null
 		t.Errorf("recovered %d entries, want 4", len(entries))
 	}
 }
+
+// --- Phase 1: Session Metadata New Fields ---
+
+func TestStore_MetadataNewFields(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	meta := agent.SessionMetadata{
+		ID:          "sess-fields",
+		CWD:         "/tmp/project",
+		Model:       "claude-sonnet-4-5-20250929",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		ProjectHash: "abc123hash",
+		ExitReason:  "end_turn",
+		AgentName:   "test-agent",
+	}
+
+	if err := s.Create(meta); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	state, err := s.Load("sess-fields")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if state.Metadata.ProjectHash != "abc123hash" {
+		t.Errorf("ProjectHash = %q, want 'abc123hash'", state.Metadata.ProjectHash)
+	}
+	if state.Metadata.ExitReason != "end_turn" {
+		t.Errorf("ExitReason = %q, want 'end_turn'", state.Metadata.ExitReason)
+	}
+	if state.Metadata.AgentName != "test-agent" {
+		t.Errorf("AgentName = %q, want 'test-agent'", state.Metadata.AgentName)
+	}
+}
+
+func TestStore_UpdateMetadataNewFields(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	meta := testMetadata("sess-update-fields", "/tmp")
+	s.Create(meta)
+
+	err := s.UpdateMetadata("sess-update-fields", func(m *agent.SessionMetadata) {
+		m.ProjectHash = "updated-hash"
+		m.ExitReason = "max_turns"
+		m.AgentName = "updated-agent"
+	})
+	if err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+
+	state, err := s.Load("sess-update-fields")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if state.Metadata.ProjectHash != "updated-hash" {
+		t.Errorf("ProjectHash = %q, want 'updated-hash'", state.Metadata.ProjectHash)
+	}
+	if state.Metadata.ExitReason != "max_turns" {
+		t.Errorf("ExitReason = %q, want 'max_turns'", state.Metadata.ExitReason)
+	}
+	if state.Metadata.AgentName != "updated-agent" {
+		t.Errorf("AgentName = %q, want 'updated-agent'", state.Metadata.AgentName)
+	}
+}

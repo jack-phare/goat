@@ -14,12 +14,25 @@ import (
 func AssembleSubagentPrompt(agentDef types.AgentDefinition, parentConfig *agent.AgentConfig) string {
 	var parts []string
 
-	// 1. Agent's custom prompt
+	// 1. Critical reminder (if set)
+	if agentDef.CriticalReminder != "" {
+		parts = append(parts, fmt.Sprintf("CRITICAL REMINDER: %s", agentDef.CriticalReminder))
+	}
+
+	// 2. Agent's custom prompt
 	if agentDef.Prompt != "" {
 		parts = append(parts, agentDef.Prompt)
 	}
 
-	// 2. Environment details
+	// 3. Skills
+	for _, skill := range agentDef.Skills {
+		content := loadSkillPrompt(skill)
+		if content != "" {
+			parts = append(parts, content)
+		}
+	}
+
+	// 4. Environment details
 	parts = append(parts, formatEnvironmentDetails(parentConfig))
 
 	return strings.Join(parts, "\n\n")
@@ -34,6 +47,12 @@ func formatEnvironmentDetails(config *agent.AgentConfig) string {
 	}
 	if config.OS != "" {
 		lines = append(lines, fmt.Sprintf("- Platform: %s", config.OS))
+	}
+	if config.OSVersion != "" {
+		lines = append(lines, fmt.Sprintf("- OS Version: %s", config.OSVersion))
+	}
+	if config.CurrentDate != "" {
+		lines = append(lines, fmt.Sprintf("- The current date is: %s", config.CurrentDate))
 	}
 	if config.Shell != "" {
 		lines = append(lines, fmt.Sprintf("- Shell: %s", config.Shell))

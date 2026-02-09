@@ -52,6 +52,18 @@ func emitToolProgress(ch chan<- types.SDKMessage, toolName, toolUseID string, el
 	ch <- msg
 }
 
+// emitTurnResult sends a per-turn result in multi-turn mode (not final).
+func emitTurnResult(ch chan<- types.SDKMessage, state *LoopState, startTime time.Time, apiDuration time.Duration) {
+	duration := time.Since(startTime).Milliseconds()
+	apiMs := apiDuration.Milliseconds()
+	result := extractLastTextContent(state)
+	msg := types.NewResultSuccess(result, state.TurnCount, state.TotalCostUSD,
+		state.TotalUsage, nil, duration, apiMs, state.SessionID)
+	// Mark as a turn result (not final) by setting subtype
+	msg.Subtype = types.ResultSubtypeSuccessTurn
+	ch <- msg
+}
+
 // emitResult sends the final ResultMessage when the loop terminates.
 func emitResult(ch chan<- types.SDKMessage, state *LoopState, startTime time.Time, apiDuration time.Duration) {
 	duration := time.Since(startTime).Milliseconds()

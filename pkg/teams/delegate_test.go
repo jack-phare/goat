@@ -40,7 +40,8 @@ func TestDelegateModeFilterToolsActive(t *testing.T) {
 
 	allTools := []string{
 		"TeamCreate", "SendMessage", "TeamDelete",
-		"TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+		"TaskCreate", "TaskUpdate", "TaskList",
+		"AskUserQuestion",
 		"Bash", "Read", "Write", "Glob", "Grep",
 	}
 
@@ -100,13 +101,13 @@ func TestDelegateModeFilterToolsNoOverlap(t *testing.T) {
 
 func TestDelegateModeToolsList(t *testing.T) {
 	expected := map[string]bool{
-		"TeamCreate": true,
-		"SendMessage": true,
-		"TeamDelete": true,
-		"TaskCreate": true,
-		"TaskUpdate": true,
-		"TaskList":   true,
-		"TaskGet":    true,
+		"TeamCreate":      true,
+		"SendMessage":     true,
+		"TeamDelete":      true,
+		"TaskCreate":      true,
+		"TaskUpdate":      true,
+		"TaskList":        true,
+		"AskUserQuestion": true,
 	}
 
 	for _, tool := range DelegateModeTools {

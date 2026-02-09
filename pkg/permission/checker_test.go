@@ -507,6 +507,138 @@ func TestChecker_CallbackError(t *testing.T) {
 	}
 }
 
+// --- Phase 4 Tests: Hook Interrupt ---
+
+// mockHookRunnerWithInterrupt returns a deny decision with continue=false (interrupt).
+type mockHookRunnerWithInterrupt struct {
+	decision    string
+	message     string
+	continueVal *bool
+}
+
+func (m *mockHookRunnerWithInterrupt) Fire(_ context.Context, _ types.HookEvent, _ any) ([]agent.HookResult, error) {
+	if m.decision == "" && m.continueVal == nil {
+		return nil, nil
+	}
+	return []agent.HookResult{{Decision: m.decision, Message: m.message, Continue: m.continueVal}}, nil
+}
+
+func TestChecker_HookDenyWithInterrupt(t *testing.T) {
+	continueVal := false
+	c := NewChecker(CheckerConfig{
+		Mode:       string(types.PermissionModeDefault),
+		HookRunner: &mockHookRunnerWithInterrupt{decision: "deny", message: "abort", continueVal: &continueVal},
+	})
+
+	result, err := c.Check(context.Background(), "Bash", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Behavior != "deny" {
+		t.Errorf("behavior = %q, want deny", result.Behavior)
+	}
+	if !result.Interrupt {
+		t.Error("expected Interrupt=true when hook returns continue=false")
+	}
+	if result.Message != "abort" {
+		t.Errorf("message = %q, want 'abort'", result.Message)
+	}
+}
+
+func TestChecker_HookAllowNoInterrupt(t *testing.T) {
+	c := NewChecker(CheckerConfig{
+		Mode:       string(types.PermissionModeDefault),
+		HookRunner: &mockHookRunnerWithInterrupt{decision: "allow", continueVal: nil},
+	})
+
+	result, err := c.Check(context.Background(), "Bash", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Behavior != "allow" {
+		t.Errorf("behavior = %q, want allow", result.Behavior)
+	}
+	if result.Interrupt {
+		t.Error("expected Interrupt=false when continue is nil")
+	}
+}
+
+func TestChecker_HookContinueFalseWithNoDecision_TriggersInterrupt(t *testing.T) {
+	continueVal := false
+	c := NewChecker(CheckerConfig{
+		Mode:       string(types.PermissionModeDefault),
+		HookRunner: &mockHookRunnerWithInterrupt{decision: "", continueVal: &continueVal},
+	})
+
+	result, err := c.Check(context.Background(), "Bash", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Behavior != "deny" {
+		t.Errorf("behavior = %q, want deny (interrupt)", result.Behavior)
+	}
+	if !result.Interrupt {
+		t.Error("expected Interrupt=true for continue=false with no decision")
+	}
+	if result.Message != "interrupted by hook" {
+		t.Errorf("message = %q, want 'interrupted by hook'", result.Message)
+	}
+}
+
+func TestChecker_MCPAnnotationLookup_ReadOnly(t *testing.T) {
+	c := NewChecker(CheckerConfig{
+		Mode: string(types.PermissionModeDefault),
+		ToolAnnotationLookup: func(name string) *MCPAnnotations {
+			if name == "mcp__server__read_tool" {
+				return &MCPAnnotations{ReadOnly: true}
+			}
+			return nil
+		},
+	})
+
+	// readOnly MCP tool → RiskLow → auto-allowed in default mode
+	result, err := c.Check(context.Background(), "mcp__server__read_tool", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Behavior != "allow" {
+		t.Errorf("readOnly MCP tool behavior = %q, want allow", result.Behavior)
+	}
+}
+
+func TestChecker_MCPAnnotationLookup_Destructive(t *testing.T) {
+	c := NewChecker(CheckerConfig{
+		Mode: string(types.PermissionModeDefault),
+		ToolAnnotationLookup: func(name string) *MCPAnnotations {
+			if name == "mcp__server__delete_tool" {
+				return &MCPAnnotations{Destructive: true}
+			}
+			return nil
+		},
+	})
+
+	// destructive MCP tool → RiskCritical → "ask" → denied headless
+	result, err := c.Check(context.Background(), "mcp__server__delete_tool", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Behavior != "deny" {
+		t.Errorf("destructive MCP tool behavior = %q, want deny (headless)", result.Behavior)
+	}
+}
+
+func TestChecker_MCPAnnotationLookup_Nil(t *testing.T) {
+	// Without annotation lookup, MCP tools default to RiskHigh behavior
+	c := NewChecker(CheckerConfig{
+		Mode: string(types.PermissionModeDefault),
+	})
+
+	result, _ := c.Check(context.Background(), "mcp__server__tool", nil)
+	if result.Behavior != "deny" {
+		t.Errorf("unannotated MCP tool (headless) behavior = %q, want deny", result.Behavior)
+	}
+}
+
 func TestChecker_FullCheckFlow_Integration(t *testing.T) {
 	// Test the full check flow: mode → disabled → allowed → rules → hook → callback → default
 	hookCalled := false

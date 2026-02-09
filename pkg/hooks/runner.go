@@ -119,6 +119,16 @@ func (r *Runner) executeCallbacks(ctx context.Context, event types.HookEvent, ca
 			continue
 		}
 
+		// Handle async hooks: re-execute with async timeout
+		if output.Async != nil && output.Async.Async {
+			asyncOutput, asyncErr := executeAsync(ctx, hook, input, output.Async.AsyncTimeout)
+			if asyncErr != nil {
+				r.emitHookResponse(hookID, hookName, event, "", "", "error")
+				continue
+			}
+			output = asyncOutput
+		}
+
 		r.emitHookResponse(hookID, hookName, event, "", "", "success")
 
 		result := convertOutput(output)
@@ -140,11 +150,26 @@ func (r *Runner) executeShellCommands(ctx context.Context, event types.HookEvent
 
 		r.emitHookStarted(hookID, hookName, event)
 
-		shellCB := ShellHookCallback(command)
+		shellCB := ShellHookCallbackWithProgress(command, func(stdout, stderr string) {
+			r.emitHookProgress(hookID, hookName, event, stdout, stderr)
+		})
 		output, err := shellCB(input, "", ctx)
 		if err != nil {
 			r.emitHookResponse(hookID, hookName, event, "", "", "error")
 			continue
+		}
+
+		// Handle async hooks: re-execute with async timeout
+		if output.Async != nil && output.Async.Async {
+			asyncCB := ShellHookCallbackWithProgress(command, func(stdout, stderr string) {
+				r.emitHookProgress(hookID, hookName, event, stdout, stderr)
+			})
+			asyncOutput, asyncErr := executeAsync(ctx, asyncCB, input, output.Async.AsyncTimeout)
+			if asyncErr != nil {
+				r.emitHookResponse(hookID, hookName, event, "", "", "error")
+				continue
+			}
+			output = asyncOutput
 		}
 
 		r.emitHookResponse(hookID, hookName, event, "", "", "success")
@@ -172,6 +197,23 @@ func (r *Runner) emitHookStarted(hookID, hookName string, event types.HookEvent)
 		HookID:      hookID,
 		HookName:    hookName,
 		HookEvent:   string(event),
+	}
+}
+
+func (r *Runner) emitHookProgress(hookID, hookName string, event types.HookEvent, stdout, stderr string) {
+	if r.emitCh == nil {
+		return
+	}
+	r.emitCh <- &types.HookProgressMessage{
+		BaseMessage: types.BaseMessage{UUID: uuid.New(), SessionID: r.sessionID},
+		Type:        types.MessageTypeSystem,
+		Subtype:     types.SystemSubtypeHookProgress,
+		HookID:      hookID,
+		HookName:    hookName,
+		HookEvent:   string(event),
+		Stdout:      stdout,
+		Stderr:      stderr,
+		Output:      stdout + stderr,
 	}
 }
 

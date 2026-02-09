@@ -18,10 +18,19 @@ const (
 	webFetchUserAgent  = "Goat/1.0 (CLI Agent)"
 )
 
+// ContentSummarizer summarizes web page content using an LLM.
+type ContentSummarizer interface {
+	Summarize(ctx context.Context, prompt, content string) (string, error)
+}
+
 // WebFetchTool fetches web content and extracts text from HTML.
 type WebFetchTool struct {
 	// HTTPClient overrides the default client (useful for testing).
 	HTTPClient *http.Client
+
+	// Summarizer, when set, processes fetched content with a prompt via an LLM.
+	// When nil, raw extracted content is returned.
+	Summarizer ContentSummarizer
 }
 
 func (w *WebFetchTool) Name() string { return "WebFetch" }
@@ -130,6 +139,17 @@ func (w *WebFetchTool) Execute(ctx context.Context, input map[string]any) (ToolO
 	// Truncate if needed
 	if len(content) > webFetchMaxContent {
 		content = content[:webFetchMaxContent] + "\n... (truncated)"
+	}
+
+	// If summarizer is available, process content through LLM
+	if w.Summarizer != nil {
+		summary, sumErr := w.Summarizer.Summarize(ctx, prompt, content)
+		if sumErr == nil && summary != "" {
+			return ToolOutput{
+				Content: fmt.Sprintf("Fetched and summarized content from %s:\n\n%s", rawURL, summary),
+			}, nil
+		}
+		// Fall back to raw content on summarizer error
 	}
 
 	return ToolOutput{

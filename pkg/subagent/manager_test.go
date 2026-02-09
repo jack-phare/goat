@@ -1012,3 +1012,112 @@ func TestManager_SessionStoreWired(t *testing.T) {
 	}
 	// Verify session store was passed through (no error means it was accepted)
 }
+
+func TestManager_SubagentStopHook_TranscriptPath(t *testing.T) {
+	var capturedTranscriptPath string
+
+	runner := hooks.NewRunner(hooks.RunnerConfig{})
+	runner.RegisterScoped("test-hooks", map[types.HookEvent][]hooks.CallbackMatcher{
+		types.HookEventSubagentStop: {
+			{Hooks: []hooks.HookCallback{func(input any, toolUseID string, ctx context.Context) (hooks.HookJSONOutput, error) {
+				if stopInput, ok := input.(*hooks.SubagentStopHookInput); ok {
+					capturedTranscriptPath = stopInput.AgentTranscriptPath
+				}
+				return hooks.HookJSONOutput{}, nil
+			}}},
+		},
+	})
+
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("done")},
+	}
+
+	transcriptDir := t.TempDir()
+
+	parentConfig := &agent.AgentConfig{
+		Model:     "claude-sonnet-4-5-20250929",
+		CWD:       "/tmp/test",
+		SessionID: "parent-session",
+	}
+
+	mgr := NewManager(ManagerOpts{
+		ParentConfig:      parentConfig,
+		LLMClient:         client,
+		CostTracker:       llm.NewCostTracker(),
+		HookRunner:        runner,
+		PermissionChecker: &agent.AllowAllChecker{},
+		TranscriptDir:     transcriptDir,
+		SessionStore:      &agent.NoOpSessionStore{},
+	}, nil)
+
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test transcript path",
+		Prompt:       "test",
+		SubagentType: "general-purpose",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedTranscriptPath == "" {
+		t.Error("expected non-empty AgentTranscriptPath in SubagentStop hook")
+	}
+
+	// Verify the path includes the agent ID
+	if !strings.Contains(capturedTranscriptPath, result.AgentID) {
+		t.Errorf("transcript path %q should contain agent ID %q", capturedTranscriptPath, result.AgentID)
+	}
+
+	// Verify it's within the transcript dir
+	if !strings.HasPrefix(capturedTranscriptPath, transcriptDir) {
+		t.Errorf("transcript path %q should be within dir %q", capturedTranscriptPath, transcriptDir)
+	}
+}
+
+func TestManager_SubagentStopHook_NoTranscriptWithoutStore(t *testing.T) {
+	var capturedTranscriptPath string
+
+	runner := hooks.NewRunner(hooks.RunnerConfig{})
+	runner.RegisterScoped("test-hooks", map[types.HookEvent][]hooks.CallbackMatcher{
+		types.HookEventSubagentStop: {
+			{Hooks: []hooks.HookCallback{func(input any, toolUseID string, ctx context.Context) (hooks.HookJSONOutput, error) {
+				if stopInput, ok := input.(*hooks.SubagentStopHookInput); ok {
+					capturedTranscriptPath = stopInput.AgentTranscriptPath
+				}
+				return hooks.HookJSONOutput{}, nil
+			}}},
+		},
+	})
+
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("done")},
+	}
+
+	parentConfig := &agent.AgentConfig{
+		Model:     "claude-sonnet-4-5-20250929",
+		CWD:       "/tmp/test",
+		SessionID: "parent-session",
+	}
+
+	// No SessionStore and no TranscriptDir
+	mgr := NewManager(ManagerOpts{
+		ParentConfig:      parentConfig,
+		LLMClient:         client,
+		CostTracker:       llm.NewCostTracker(),
+		HookRunner:        runner,
+		PermissionChecker: &agent.AllowAllChecker{},
+	}, nil)
+
+	_, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test no transcript",
+		Prompt:       "test",
+		SubagentType: "general-purpose",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedTranscriptPath != "" {
+		t.Errorf("expected empty AgentTranscriptPath without SessionStore, got %q", capturedTranscriptPath)
+	}
+}

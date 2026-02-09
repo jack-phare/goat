@@ -10,13 +10,17 @@ import (
 
 // mockSummaryClient is a mock LLM client that returns a pre-configured summary.
 type mockSummaryClient struct {
-	summary string
-	err     error
-	calls   int
+	summary   string
+	err       error
+	calls     int
+	lastPrompt string // captures the user message sent to the LLM
 }
 
 func (m *mockSummaryClient) Complete(_ context.Context, req *llm.CompletionRequest) (*llm.Stream, error) {
 	m.calls++
+	if len(req.Messages) > 0 {
+		m.lastPrompt = ContentString(req.Messages[0])
+	}
 	if m.err != nil {
 		return nil, m.err
 	}

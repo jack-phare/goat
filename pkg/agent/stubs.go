@@ -23,6 +23,29 @@ func (a *AllowAllChecker) Check(_ context.Context, _ string, _ map[string]any) (
 	return PermissionResult{Behavior: "allow"}, nil
 }
 
+// BackgroundPermissionChecker allows only pre-approved tools for background agents.
+// Tools not in the pre-approved set are auto-denied. AskUserQuestion is always denied.
+type BackgroundPermissionChecker struct {
+	PreApproved map[string]bool // tools auto-allowed in background mode
+}
+
+func (b *BackgroundPermissionChecker) Check(_ context.Context, toolName string, _ map[string]any) (PermissionResult, error) {
+	// AskUserQuestion is never allowed in background mode
+	if toolName == "AskUserQuestion" {
+		return PermissionResult{
+			Behavior: "deny",
+			Message:  "AskUserQuestion is not available in background mode",
+		}, nil
+	}
+	if b.PreApproved != nil && b.PreApproved[toolName] {
+		return PermissionResult{Behavior: "allow"}, nil
+	}
+	return PermissionResult{
+		Behavior: "deny",
+		Message:  "tool not pre-approved for background agent",
+	}, nil
+}
+
 // NoOpHookRunner does nothing and returns empty results.
 type NoOpHookRunner struct{}
 

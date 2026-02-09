@@ -20,8 +20,9 @@ type AgentInput struct {
 
 // AgentResult contains the result from a subagent.
 type AgentResult struct {
-	AgentID string
-	Output  string // final output (empty if background)
+	AgentID    string
+	Output     string // final output (empty if background)
+	OutputFile string // path to output file (background agents only)
 }
 
 // SubagentSpawner creates and runs subagent instances.
@@ -150,9 +151,11 @@ func (a *AgentTool) Execute(ctx context.Context, input map[string]any) (ToolOutp
 	}
 
 	if result.Output == "" && result.AgentID != "" {
-		return ToolOutput{
-			Content: fmt.Sprintf("Agent started in background. Agent ID: %s", result.AgentID),
-		}, nil
+		msg := fmt.Sprintf("Agent started in background. Agent ID: %s", result.AgentID)
+		if result.OutputFile != "" {
+			msg += fmt.Sprintf("\nOutput file: %s", result.OutputFile)
+		}
+		return ToolOutput{Content: msg}, nil
 	}
 
 	content := result.Output

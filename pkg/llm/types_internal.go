@@ -9,6 +9,7 @@ type CompletionResponse struct {
 	Content      []types.ContentBlock // Accumulated content blocks (text, tool_use, thinking)
 	ToolCalls    []ToolCall           // Extracted tool calls (OpenAI format, for reference)
 	FinishReason string               // OpenAI finish_reason: "stop"|"tool_calls"|"length"
-	StopReason   string               // Translated Anthropic stop_reason: "end_turn"|"tool_use"|"max_tokens"
+	StopReason   string               // Translated Anthropic stop_reason: "end_turn"|"tool_use"|"max_tokens"|"stop_sequence"
+	StopSequence string               // The matched stop sequence value (when StopReason is "stop_sequence")
 	Usage        types.BetaUsage      // Token usage (translated to Anthropic format)
 }

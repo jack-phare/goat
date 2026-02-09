@@ -88,16 +88,18 @@ func (o *AgentOutput) GetResult() *TaskResult {
 
 // RunningAgent tracks a single executing subagent instance.
 type RunningAgent struct {
-	ID         string
-	Type       string // agent type name
-	Name       string // display name
-	Definition Definition
-	State      AgentState
-	StartedAt  time.Time
-	Output     *AgentOutput
-	Cancel     func()       // cancel function to stop the agent
-	Done       chan struct{} // closed when the agent finishes
-	Metrics    TaskMetrics
+	ID             string
+	Type           string // agent type name
+	Name           string // display name
+	Definition     Definition
+	State          AgentState
+	StartedAt      time.Time
+	Output         *AgentOutput
+	OutputFile     string       // path to output file (background agents only)
+	TranscriptPath string       // path to transcript file (when persistence is enabled)
+	Cancel         func()       // cancel function to stop the agent
+	Done           chan struct{} // closed when the agent finishes
+	Metrics        TaskMetrics
 
 	mu        sync.Mutex
 	cleanupFn func() // called on completion to unregister hooks etc.

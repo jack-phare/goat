@@ -40,11 +40,31 @@ var toolRiskByName = map[string]ToolRiskLevel{
 // ToolRisk returns the risk level for a tool by name.
 // MCP tools (mcp__*) default to RiskHigh.
 func ToolRisk(toolName string) ToolRiskLevel {
+	return ToolRiskWithAnnotations(toolName, nil)
+}
+
+// MCPAnnotations describes MCP tool behavior metadata for permission decisions.
+type MCPAnnotations struct {
+	ReadOnly    bool
+	Destructive bool
+	OpenWorld   bool
+}
+
+// ToolRiskWithAnnotations returns the risk level for a tool, consulting MCP annotations if present.
+func ToolRiskWithAnnotations(toolName string, annotations *MCPAnnotations) ToolRiskLevel {
 	if risk, ok := toolRiskByName[toolName]; ok {
 		return risk
 	}
-	// MCP tools default to high risk
+	// MCP tools: use annotations when available
 	if len(toolName) > 5 && toolName[:5] == "mcp__" {
+		if annotations != nil {
+			if annotations.Destructive {
+				return RiskCritical
+			}
+			if annotations.ReadOnly {
+				return RiskLow
+			}
+		}
 		return RiskHigh
 	}
 	return RiskHigh // unknown tools default to high
@@ -52,8 +72,9 @@ func ToolRisk(toolName string) ToolRiskLevel {
 
 // DefaultBehaviorForTool returns the default permission behavior for a tool
 // given the current permission mode, based on the mode behavior matrix.
-func DefaultBehaviorForTool(mode types.PermissionMode, toolName string) PermissionBehavior {
-	risk := ToolRisk(toolName)
+// If annotations are provided, they are used for MCP tool risk assessment.
+func DefaultBehaviorForTool(mode types.PermissionMode, toolName string, annotations *MCPAnnotations) PermissionBehavior {
+	risk := ToolRiskWithAnnotations(toolName, annotations)
 
 	switch mode {
 	case types.PermissionModeDefault:

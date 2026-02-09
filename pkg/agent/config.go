@@ -24,15 +24,31 @@ type AgentConfig struct {
 	SessionID      string
 	PermissionMode types.PermissionMode
 
+	// Multi-turn mode
+	MultiTurn bool // if true, loop waits for more input after end_turn instead of exiting
+
 	// Streaming
 	IncludePartial bool // emit stream_event messages for each SSE chunk
 
 	// Debug
-	Debug bool
+	Debug     bool
+	DebugFile string // path for debug output
+
+	// Model control
+	FallbackModel   string // for automatic model fallback
+	MaxThinkingTkns *int   // thinking token limit (wire to LLM request)
+
+	// Additional directories for prompt assembly
+	AdditionalDirs []string
+
+	// Beta features
+	Betas []string
 
 	// Environment
-	OS    string // runtime.GOOS
-	Shell string // $SHELL
+	OS          string // runtime.GOOS
+	OSVersion   string // e.g., "Darwin 25.2.0"
+	CurrentDate string // e.g., "2026-02-09"
+	Shell       string // $SHELL
 
 	// Feature toggles
 	SessionsEnabled bool

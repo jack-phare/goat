@@ -259,6 +259,109 @@ func TestCompactor_Compact_NoLLMClient(t *testing.T) {
 	}
 }
 
+func TestCompactor_MustCompact(t *testing.T) {
+	c := NewCompactor(CompactorConfig{CriticalPct: 0.95})
+
+	tests := []struct {
+		name   string
+		budget agent.TokenBudget
+		want   bool
+	}{
+		{
+			"under critical",
+			agent.TokenBudget{ContextLimit: 200_000, SystemPromptTkns: 10_000, MessageTkns: 150_000, MaxOutputTkns: 16384},
+			false, // ~88%
+		},
+		{
+			"at critical boundary",
+			agent.TokenBudget{ContextLimit: 200_000, SystemPromptTkns: 10_000, MessageTkns: 170_000, MaxOutputTkns: 10_000},
+			false, // exactly 95%
+		},
+		{
+			"over critical",
+			agent.TokenBudget{ContextLimit: 200_000, SystemPromptTkns: 10_000, MessageTkns: 180_000, MaxOutputTkns: 16384},
+			true, // ~103% (overflow)
+		},
+		{
+			"96 percent",
+			agent.TokenBudget{ContextLimit: 100_000, SystemPromptTkns: 5_000, MessageTkns: 82_000, MaxOutputTkns: 10_000},
+			true, // 97%
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := c.MustCompact(tt.budget)
+			if got != tt.want {
+				t.Errorf("MustCompact() = %v, want %v (utilization=%.2f)", got, tt.want, tt.budget.UtilizationPct())
+			}
+		})
+	}
+}
+
+func TestCompactor_Compact_CustomInstructionsFromHook(t *testing.T) {
+	hookRunner := &hookRunnerWithCustomInstructions{
+		instructions: "Focus on code changes and ignore chitchat",
+	}
+	client := &mockSummaryClient{summary: "Summary with custom instructions."}
+
+	c := NewCompactor(CompactorConfig{
+		LLMClient:     client,
+		HookRunner:    hookRunner,
+		PreserveRatio: 0.40,
+	})
+
+	messages := make([]llm.ChatMessage, 6)
+	for i := range messages {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		messages[i] = llm.ChatMessage{
+			Role:    role,
+			Content: strings.Repeat(fmt.Sprintf("msg%d-", i), 200),
+		}
+	}
+
+	ch := make(chan types.SDKMessage, 10)
+	_, err := c.Compact(context.Background(), agent.CompactRequest{
+		Messages:  messages,
+		Budget:    agent.TokenBudget{ContextLimit: 1000, MaxOutputTkns: 100, MessageTkns: 900},
+		Trigger:   "auto",
+		SessionID: "test",
+		EmitCh:    ch,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify that the LLM was called with custom instructions
+	if client.lastPrompt == "" {
+		t.Fatal("expected LLM to be called")
+	}
+	if !strings.Contains(client.lastPrompt, "Focus on code changes") {
+		t.Errorf("custom instructions not passed to summary prompt; got:\n%s", client.lastPrompt[:200])
+	}
+}
+
+// hookRunnerWithCustomInstructions returns custom_instructions from PreCompact hook.
+type hookRunnerWithCustomInstructions struct {
+	instructions string
+}
+
+func (h *hookRunnerWithCustomInstructions) Fire(_ context.Context, event types.HookEvent, _ any) ([]agent.HookResult, error) {
+	if event == types.HookEventPreCompact {
+		return []agent.HookResult{
+			{
+				HookSpecificOutput: map[string]any{
+					"custom_instructions": h.instructions,
+				},
+			},
+		}, nil
+	}
+	return nil, nil
+}
+
 func TestNewCompactor_Defaults(t *testing.T) {
 	c := NewCompactor(CompactorConfig{})
 

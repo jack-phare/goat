@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -160,5 +161,103 @@ func TestWebFetch_MissingPrompt(t *testing.T) {
 	}
 	if !out.IsError {
 		t.Error("expected error for missing prompt")
+	}
+}
+
+// --- Summarizer Tests ---
+
+type mockSummarizer struct {
+	prompt  string
+	content string
+	result  string
+	err     error
+}
+
+func (m *mockSummarizer) Summarize(_ context.Context, prompt, content string) (string, error) {
+	m.prompt = prompt
+	m.content = content
+	return m.result, m.err
+}
+
+func TestWebFetch_WithSummarizer(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("raw page content"))
+	}))
+	defer srv.Close()
+
+	summarizer := &mockSummarizer{result: "This is a summary of the page."}
+	tool := &WebFetchTool{HTTPClient: srv.Client(), Summarizer: summarizer}
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"url":    srv.URL,
+		"prompt": "summarize this",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.IsError {
+		t.Fatalf("unexpected error: %s", out.Content)
+	}
+	if !strings.Contains(out.Content, "summary of the page") {
+		t.Errorf("expected summary in output, got %q", out.Content)
+	}
+	if !strings.Contains(out.Content, "summarized") {
+		t.Error("expected 'summarized' prefix in output")
+	}
+	// Verify summarizer received the prompt and content
+	if summarizer.prompt != "summarize this" {
+		t.Errorf("summarizer.prompt = %q, want 'summarize this'", summarizer.prompt)
+	}
+	if !strings.Contains(summarizer.content, "raw page content") {
+		t.Errorf("summarizer.content should contain page content, got %q", summarizer.content)
+	}
+}
+
+func TestWebFetch_SummarizerError_FallsBack(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("fallback content"))
+	}))
+	defer srv.Close()
+
+	summarizer := &mockSummarizer{err: fmt.Errorf("LLM unavailable")}
+	tool := &WebFetchTool{HTTPClient: srv.Client(), Summarizer: summarizer}
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"url":    srv.URL,
+		"prompt": "extract info",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.IsError {
+		t.Fatalf("unexpected error: %s", out.Content)
+	}
+	// Should fall back to raw content
+	if !strings.Contains(out.Content, "fallback content") {
+		t.Errorf("expected raw content fallback, got %q", out.Content)
+	}
+	// Should NOT say "summarized"
+	if strings.Contains(out.Content, "summarized") {
+		t.Error("should not contain 'summarized' when summarizer failed")
+	}
+}
+
+func TestWebFetch_NilSummarizer_RawContent(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("raw content"))
+	}))
+	defer srv.Close()
+
+	tool := &WebFetchTool{HTTPClient: srv.Client()} // No summarizer
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"url":    srv.URL,
+		"prompt": "read",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Content, "raw content") {
+		t.Errorf("expected raw content, got %q", out.Content)
 	}
 }
