@@ -74,7 +74,28 @@ type TeamCreateTool struct {
 func (t *TeamCreateTool) Name() string { return "TeamCreate" }
 
 func (t *TeamCreateTool) Description() string {
-	return "Creates a new agent team for coordinating multiple Claude Code sessions."
+	return `Create a new team to coordinate multiple agents working on a project. Teams have a 1:1 correspondence with task lists (Team = TaskList).
+
+## When to Use
+Use this tool proactively whenever:
+- The user explicitly asks to use a team, swarm, or group of agents
+- The user mentions wanting agents to work together, coordinate, or collaborate
+- A task is complex enough that it would benefit from parallel work by multiple agents
+
+When in doubt about whether a task warrants a team, prefer spawning a team.
+
+## Team Workflow
+1. Create a team with TeamCreate - this creates both the team and its task list
+2. Create tasks using the Task tools (TaskCreate, TaskList, etc.)
+3. Spawn teammates using the Task tool with team_name and name parameters
+4. Assign tasks using TaskUpdate with owner to give tasks to idle teammates
+5. Teammates work on assigned tasks and mark them completed via TaskUpdate
+6. Shutdown your team when done - gracefully shut down teammates via SendMessage with type: "shutdown_request"
+
+## Important Notes
+- Always refer to teammates by their NAME, never by UUID
+- Your team cannot hear you if you do not use the SendMessage tool
+- Do NOT send structured JSON status messages — use TaskUpdate to mark tasks completed`
 }
 
 func (t *TeamCreateTool) InputSchema() map[string]any {

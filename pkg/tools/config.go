@@ -45,7 +45,13 @@ type ConfigTool struct {
 func (c *ConfigTool) Name() string { return "Config" }
 
 func (c *ConfigTool) Description() string {
-	return "Gets or sets runtime configuration values."
+	return `Gets or sets runtime configuration values for the current session.
+
+Usage:
+- To read a setting, provide only the "setting" parameter
+- To write a setting, provide both "setting" and "value" parameters
+- Settings are scoped to the current session and do not persist across restarts
+- Use this tool to adjust agent behavior at runtime (e.g., toggle verbose mode, change output preferences)`
 }
 
 func (c *ConfigTool) InputSchema() map[string]any {
