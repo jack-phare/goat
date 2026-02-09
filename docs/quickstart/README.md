@@ -70,13 +70,55 @@ go run ./cmd/example/ -help
 
 ```
 GROQ_API_KEY=gsk_...
-GROQ_API_BASE=https://api.groq.com/openai/v1
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
+
+# LiteLLM (any one of these — checked in order)
 EXECUTOR_LITELLM_KEY=sk-...
+LITELLM_MASTER_KEY=sk-dev-key
+LITELLM_API_KEY=sk-...
 ```
 
-The example auto-detects which provider to use based on available env vars (priority: groq > openai > anthropic > litellm).
+The example auto-detects which provider to use based on available env vars (priority: groq > openai > anthropic > litellm). For LiteLLM, it checks three env vars in order: `EXECUTOR_LITELLM_KEY` (production) > `LITELLM_MASTER_KEY` (dev) > `LITELLM_API_KEY` (generic).
+
+### Testing all providers
+
+Copy-paste commands to test each provider via direct access and via LiteLLM proxy:
+
+```bash
+# === Direct providers ===
+
+# Groq direct
+go run ./cmd/example/ -provider groq -no-tools -prompt "What is 2+2?"
+go run ./cmd/example/ -provider groq -prompt "List files here" -max-turns 3
+
+# OpenAI direct
+go run ./cmd/example/ -provider openai -no-tools -prompt "What is 2+2?"
+go run ./cmd/example/ -provider openai -prompt "List files here" -max-turns 3
+
+# Anthropic direct
+go run ./cmd/example/ -provider anthropic -no-tools -prompt "What is 2+2?"
+go run ./cmd/example/ -provider anthropic -prompt "List files here" -max-turns 3
+
+# === Via LiteLLM proxy ===
+# (requires proxy running at localhost:4000)
+
+# gpt-5-nano (default litellm model)
+go run ./cmd/example/ -provider litellm -no-tools -prompt "What is 2+2?"
+go run ./cmd/example/ -provider litellm -prompt "List files here" -max-turns 3
+
+# gpt-5-mini
+go run ./cmd/example/ -provider litellm -model gpt-5-mini -no-tools -prompt "What is 2+2?"
+go run ./cmd/example/ -provider litellm -model gpt-5-mini -prompt "Read go.mod" -max-turns 3
+
+# gpt-4o-mini
+go run ./cmd/example/ -provider litellm -model gpt-4o-mini -no-tools -prompt "What is 2+2?"
+go run ./cmd/example/ -provider litellm -model gpt-4o-mini -prompt "List files here" -max-turns 3
+
+# llama-3.3-70b (via Groq through proxy)
+go run ./cmd/example/ -provider litellm -model llama-3.3-70b -no-tools -prompt "What is 2+2?"
+go run ./cmd/example/ -provider litellm -model llama-3.3-70b -prompt "List files here" -max-turns 3
+```
 
 ## 3. Minimal Code Example
 
@@ -194,6 +236,13 @@ Model IDs must match what your LiteLLM proxy has configured. Check available mod
 ```bash
 curl http://localhost:4000/v1/models -H "Authorization: Bearer $EXECUTOR_LITELLM_KEY"
 ```
+
+Available models on the production (agent-hub) proxy:
+- `gpt-4o-mini` — Azure OpenAI
+- `gpt-5-nano` — Azure OpenAI (default for litellm provider)
+- `gpt-5-mini` — Azure OpenAI
+- `llama-3.3-70b` — Groq
+- `text-embedding-3-small` — OpenAI (embeddings only)
 
 **Note:** Azure OpenAI uses a different URL and auth pattern. Use it via LiteLLM rather than direct access.
 
