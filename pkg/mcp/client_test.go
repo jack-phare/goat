@@ -392,6 +392,73 @@ func TestClient_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestClient_AnnotationsPreservedThroughRegistration(t *testing.T) {
+	registry := tools.NewRegistry()
+	client := NewClient(registry)
+
+	readOnly := true
+	destructive := false
+	mock := newMockTransport().
+		withInitialize(ServerCapabilities{Tools: &ToolsCapability{}}).
+		withTools([]ToolInfo{{
+			Name:        "safe_read",
+			Description: "A read-only tool",
+			Annotations: &ToolAnnotations{
+				ReadOnly:    &readOnly,
+				Destructive: &destructive,
+			},
+		}})
+
+	connectWithMock(t, client, "srv1", mock)
+
+	// Verify tool is registered
+	tool, ok := registry.Get("mcp__srv1__safe_read")
+	if !ok {
+		t.Fatal("expected mcp__srv1__safe_read in registry")
+	}
+
+	// Verify annotations are accessible
+	mcpTool, ok := tool.(*tools.MCPTool)
+	if !ok {
+		t.Fatalf("expected *tools.MCPTool, got %T", tool)
+	}
+
+	annotations := mcpTool.Annotations()
+	if annotations == nil {
+		t.Fatal("expected annotations to be non-nil")
+	}
+	if annotations.ReadOnly == nil || *annotations.ReadOnly != true {
+		t.Errorf("ReadOnly = %v, want true", annotations.ReadOnly)
+	}
+	if annotations.Destructive == nil || *annotations.Destructive != false {
+		t.Errorf("Destructive = %v, want false", annotations.Destructive)
+	}
+	if annotations.OpenWorld != nil {
+		t.Errorf("OpenWorld should be nil, got %v", annotations.OpenWorld)
+	}
+}
+
+func TestClient_AnnotationsNilWhenAbsent(t *testing.T) {
+	registry := tools.NewRegistry()
+	client := NewClient(registry)
+
+	mock := newMockTransport().
+		withInitialize(ServerCapabilities{Tools: &ToolsCapability{}}).
+		withTools([]ToolInfo{{Name: "no_annotations", Description: "No annotations"}})
+
+	connectWithMock(t, client, "srv1", mock)
+
+	tool, ok := registry.Get("mcp__srv1__no_annotations")
+	if !ok {
+		t.Fatal("expected tool in registry")
+	}
+
+	mcpTool := tool.(*tools.MCPTool)
+	if mcpTool.Annotations() != nil {
+		t.Error("expected nil annotations when server doesn't provide them")
+	}
+}
+
 func TestClient_ToolSchemaPassthrough(t *testing.T) {
 	registry := tools.NewRegistry()
 	client := NewClient(registry)

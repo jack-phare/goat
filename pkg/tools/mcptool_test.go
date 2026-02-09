@@ -16,7 +16,7 @@ func TestMCPTool_Registration(t *testing.T) {
 		"properties": map[string]any{
 			"query": map[string]any{"type": "string"},
 		},
-	}, client)
+	}, client, nil)
 
 	tool, ok := registry.Get("mcp__myserver__search")
 	if !ok {
@@ -70,9 +70,9 @@ func TestMCPTool_UnregisterTools(t *testing.T) {
 	registry := NewRegistry()
 	client := &mockMCPClient{}
 
-	registry.RegisterMCPTool("srv1", "tool_a", "desc", nil, client)
-	registry.RegisterMCPTool("srv1", "tool_b", "desc", nil, client)
-	registry.RegisterMCPTool("srv2", "tool_c", "desc", nil, client)
+	registry.RegisterMCPTool("srv1", "tool_a", "desc", nil, client, nil)
+	registry.RegisterMCPTool("srv1", "tool_b", "desc", nil, client, nil)
+	registry.RegisterMCPTool("srv2", "tool_c", "desc", nil, client, nil)
 
 	// Should have 3 tools
 	names := registry.Names()
@@ -126,4 +126,42 @@ func TestMCPTool_EmptyResult(t *testing.T) {
 	if out.IsError {
 		t.Error("should not be error with nil error")
 	}
+}
+
+func TestMCPTool_AnnotationsAccessor(t *testing.T) {
+	ro := true
+	destr := false
+
+	t.Run("with annotations", func(t *testing.T) {
+		tool := &MCPTool{
+			ServerName: "srv",
+			ToolName:   "delete_item",
+			Desc:       "Deletes an item",
+			ToolAnnotations: &MCPToolAnnotations{
+				ReadOnly:    &ro,
+				Destructive: &destr,
+			},
+		}
+
+		ann := tool.Annotations()
+		if ann == nil {
+			t.Fatal("expected annotations, got nil")
+		}
+		if ann.ReadOnly == nil || *ann.ReadOnly != true {
+			t.Error("expected ReadOnly=true")
+		}
+		if ann.Destructive == nil || *ann.Destructive != false {
+			t.Error("expected Destructive=false")
+		}
+		if ann.OpenWorld != nil {
+			t.Errorf("expected OpenWorld=nil, got %v", *ann.OpenWorld)
+		}
+	})
+
+	t.Run("nil annotations", func(t *testing.T) {
+		tool := &MCPTool{ServerName: "srv", ToolName: "search"}
+		if tool.Annotations() != nil {
+			t.Error("expected nil annotations")
+		}
+	})
 }

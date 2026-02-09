@@ -342,6 +342,90 @@ func TestUnmarshalSDKMessage_InvalidJSON(t *testing.T) {
 	}
 }
 
+// --- Test Parity: ThinkingBlock Unmarshal (ported from Python Agent SDK) ---
+
+func TestUnmarshalSDKMessage_AssistantMessageThinking(t *testing.T) {
+	// JSON with type="assistant", content array containing thinking + text blocks.
+	// Verifies thinking blocks survive JSON round-trip through UnmarshalSDKMessage.
+	orig := AssistantMessage{
+		BaseMessage: BaseMessage{UUID: uuid.New(), SessionID: "s1"},
+		Type:        MessageTypeAssistant,
+		Message: BetaMessage{
+			ID: "msg_1", Type: "message", Role: "assistant",
+			Content: []ContentBlock{
+				{Type: "thinking", Thinking: "Let me analyze this problem step by step..."},
+				{Type: "text", Text: "Here's my answer based on analysis"},
+			},
+			Usage: BetaUsage{InputTokens: 200, OutputTokens: 100},
+		},
+	}
+	data := mustMarshal(t, orig)
+
+	msg, err := UnmarshalSDKMessage(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSDKMessage: %v", err)
+	}
+	am, ok := msg.(*AssistantMessage)
+	if !ok {
+		t.Fatalf("expected *AssistantMessage, got %T", msg)
+	}
+
+	if len(am.Message.Content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(am.Message.Content))
+	}
+
+	// Verify thinking block
+	if am.Message.Content[0].Type != "thinking" {
+		t.Errorf("content[0].Type = %q, want thinking", am.Message.Content[0].Type)
+	}
+	if am.Message.Content[0].Thinking != "Let me analyze this problem step by step..." {
+		t.Errorf("content[0].Thinking = %q", am.Message.Content[0].Thinking)
+	}
+
+	// Verify text block
+	if am.Message.Content[1].Type != "text" {
+		t.Errorf("content[1].Type = %q, want text", am.Message.Content[1].Type)
+	}
+	if am.Message.Content[1].Text != "Here's my answer based on analysis" {
+		t.Errorf("content[1].Text = %q", am.Message.Content[1].Text)
+	}
+
+	// Verify ordering is preserved
+	if am.Message.Content[0].Type != "thinking" || am.Message.Content[1].Type != "text" {
+		t.Error("content block ordering not preserved: expected thinking then text")
+	}
+}
+
+func TestContentBlock_UnmarshalJSON_Thinking(t *testing.T) {
+	// Direct ContentBlock unmarshal from JSON
+	data := []byte(`{"type":"thinking","thinking":"deep thought"}`)
+	var cb ContentBlock
+	if err := json.Unmarshal(data, &cb); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if cb.Type != "thinking" {
+		t.Errorf("Type = %q, want thinking", cb.Type)
+	}
+	if cb.Thinking != "deep thought" {
+		t.Errorf("Thinking = %q, want 'deep thought'", cb.Thinking)
+	}
+
+	// Verify other fields are zero values
+	if cb.Text != "" {
+		t.Errorf("Text should be empty, got %q", cb.Text)
+	}
+	if cb.ID != "" {
+		t.Errorf("ID should be empty, got %q", cb.ID)
+	}
+	if cb.Name != "" {
+		t.Errorf("Name should be empty, got %q", cb.Name)
+	}
+	if cb.Input != nil {
+		t.Errorf("Input should be nil, got %v", cb.Input)
+	}
+}
+
 // --- Stub Tests for Unimplemented Features ---
 
 func TestUnmarshalSDKMessage_PartialMessageStreaming(t *testing.T) {

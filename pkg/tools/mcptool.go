@@ -6,13 +6,21 @@ import (
 	"strings"
 )
 
+// MCPToolAnnotations provides metadata about a tool's behavior (from MCP server).
+type MCPToolAnnotations struct {
+	ReadOnly    *bool `json:"readOnly,omitempty"`
+	Destructive *bool `json:"destructive,omitempty"`
+	OpenWorld   *bool `json:"openWorld,omitempty"`
+}
+
 // MCPTool represents a single tool exposed by an MCP server.
 type MCPTool struct {
-	ServerName  string
-	ToolName    string
-	Desc        string
-	Schema      map[string]any
-	Client      MCPClient
+	ServerName     string
+	ToolName       string
+	Desc           string
+	Schema         map[string]any
+	Client         MCPClient
+	ToolAnnotations *MCPToolAnnotations
 }
 
 func (m *MCPTool) Name() string {
@@ -32,6 +40,9 @@ func (m *MCPTool) InputSchema() map[string]any {
 }
 
 func (m *MCPTool) SideEffect() SideEffectType { return SideEffectNetwork }
+
+// Annotations returns the MCP tool annotations, or nil if not set.
+func (m *MCPTool) Annotations() *MCPToolAnnotations { return m.ToolAnnotations }
 
 func (m *MCPTool) Execute(ctx context.Context, input map[string]any) (ToolOutput, error) {
 	client := m.Client
@@ -65,13 +76,14 @@ func (m *MCPTool) Execute(ctx context.Context, input map[string]any) (ToolOutput
 }
 
 // RegisterMCPTool adds a dynamic MCP tool to the registry.
-func (r *Registry) RegisterMCPTool(serverName, toolName, description string, schema map[string]any, client MCPClient) {
+func (r *Registry) RegisterMCPTool(serverName, toolName, description string, schema map[string]any, client MCPClient, annotations *MCPToolAnnotations) {
 	tool := &MCPTool{
-		ServerName: serverName,
-		ToolName:   toolName,
-		Desc:       description,
-		Schema:     schema,
-		Client:     client,
+		ServerName:      serverName,
+		ToolName:        toolName,
+		Desc:            description,
+		Schema:          schema,
+		Client:          client,
+		ToolAnnotations: annotations,
 	}
 	r.Register(tool)
 }

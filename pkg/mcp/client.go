@@ -294,6 +294,14 @@ func (c *Client) registerTools(serverName string, mcpTools []ToolInfo) {
 		if t.InputSchema != nil {
 			json.Unmarshal(t.InputSchema, &schema)
 		}
-		c.registry.RegisterMCPTool(serverName, t.Name, t.Description, schema, c)
+		var annotations *tools.MCPToolAnnotations
+		if t.Annotations != nil {
+			annotations = &tools.MCPToolAnnotations{
+				ReadOnly:    t.Annotations.ReadOnly,
+				Destructive: t.Annotations.Destructive,
+				OpenWorld:   t.Annotations.OpenWorld,
+			}
+		}
+		c.registry.RegisterMCPTool(serverName, t.Name, t.Description, schema, c, annotations)
 	}
 }

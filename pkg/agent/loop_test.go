@@ -1844,6 +1844,101 @@ func TestLoop_BudgetExhausted(t *testing.T) {
 	}
 }
 
+// --- Test Parity: Thinking Delta StreamEvents (ported from Python Agent SDK) ---
+
+func TestLoop_StreamEvents_ThinkingDelta(t *testing.T) {
+	// Mock LLM returns chunks with ReasoningContent deltas (thinking deltas).
+	// With IncludePartial=true, these should be emitted as stream_event messages
+	// with delta.type == "thinking_delta".
+	thinking := "Let me think about this..."
+	text := "Here's my answer."
+	stop := "stop"
+
+	thinkingResponse := &mockStream{
+		chunks: []llm.StreamChunk{
+			{
+				ID:    "msg-1",
+				Model: "claude-sonnet-4-5-20250929",
+				Choices: []llm.Choice{
+					{Delta: llm.Delta{ReasoningContent: &thinking}},
+				},
+			},
+			{
+				ID:    "msg-1",
+				Model: "claude-sonnet-4-5-20250929",
+				Choices: []llm.Choice{
+					{Delta: llm.Delta{Content: &text}},
+				},
+			},
+			{
+				ID:    "msg-1",
+				Model: "claude-sonnet-4-5-20250929",
+				Choices: []llm.Choice{
+					{FinishReason: &stop},
+				},
+				Usage: &llm.Usage{PromptTokens: 100, CompletionTokens: 80, TotalTokens: 180},
+			},
+		},
+	}
+
+	client := &mockLLMClient{
+		responses: []*mockStream{thinkingResponse},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.IncludePartial = true
+
+	q := RunLoop(context.Background(), "Think about this", config)
+	msgs := collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+
+	// Should have stream_event messages with thinking_delta
+	foundThinkingDelta := false
+	foundTextDelta := false
+	for _, m := range msgs {
+		if m.GetType() != types.MessageTypeStreamEvent {
+			continue
+		}
+		partial, ok := m.(*types.PartialAssistantMessage)
+		if !ok {
+			// value type
+			if pv, ok2 := m.(types.PartialAssistantMessage); ok2 {
+				partial = &pv
+			} else {
+				continue
+			}
+		}
+		eventMap, ok := partial.Event.(map[string]any)
+		if !ok {
+			continue
+		}
+		delta, ok := eventMap["delta"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if delta["type"] == "thinking_delta" {
+			foundThinkingDelta = true
+			if delta["thinking"] != "Let me think about this..." {
+				t.Errorf("thinking delta content = %q, want 'Let me think about this...'", delta["thinking"])
+			}
+		}
+		if delta["type"] == "text_delta" {
+			foundTextDelta = true
+		}
+	}
+
+	if !foundThinkingDelta {
+		t.Error("expected stream_event with thinking_delta, none found")
+	}
+	if !foundTextDelta {
+		t.Error("expected stream_event with text_delta, none found")
+	}
+}
+
 // --- Stub Tests for Unimplemented Features ---
 
 func TestLoop_StructuredOutput(t *testing.T) {

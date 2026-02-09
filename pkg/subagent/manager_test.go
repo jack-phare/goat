@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -508,6 +509,122 @@ func TestManager_PermissionModeResolution(t *testing.T) {
 
 func TestManager_ImplementsSubagentSpawner(t *testing.T) {
 	var _ tools.SubagentSpawner = (*Manager)(nil)
+}
+
+// --- Test Parity: Filesystem Agent Loading (ported from Python Agent SDK) ---
+
+func TestManager_ReloadWithFilesystemAgents(t *testing.T) {
+	// 1. Create temp dir with .claude/agents/helper.md (valid frontmatter)
+	tmpDir := t.TempDir()
+	agentDir := tmpDir + "/.claude/agents"
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	agentContent := `---
+name: helper
+description: A test helper agent
+model: haiku
+tools: Read, Grep
+---
+You are a helpful test agent that assists with reading and searching files.
+`
+	if err := os.WriteFile(agentDir+"/helper.md", []byte(agentContent), 0o644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	// 2. Create Manager
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("ok")},
+	}
+	mgr := newTestManager(client)
+
+	// Verify helper is NOT in definitions before reload
+	defs := mgr.Definitions()
+	if _, ok := defs["helper"]; ok {
+		t.Error("helper should not be in definitions before reload")
+	}
+
+	// 3. Reload from tmpDir
+	if err := mgr.Reload(tmpDir); err != nil {
+		t.Fatalf("Reload error: %v", err)
+	}
+
+	// 4. Verify "helper" agent is in definitions
+	defs = mgr.Definitions()
+	helperDef, ok := defs["helper"]
+	if !ok {
+		t.Fatal("expected 'helper' agent in definitions after reload")
+	}
+	if helperDef.Description != "A test helper agent" {
+		t.Errorf("description = %q, want 'A test helper agent'", helperDef.Description)
+	}
+	if helperDef.Model != "haiku" {
+		t.Errorf("model = %q, want 'haiku'", helperDef.Model)
+	}
+	if helperDef.Source != SourceProject {
+		t.Errorf("source = %v, want SourceProject", helperDef.Source)
+	}
+
+	// Built-in agents should still be present
+	if _, ok := defs["general-purpose"]; !ok {
+		t.Error("expected built-in 'general-purpose' to still be present after reload")
+	}
+
+	// 5. Verify it can be spawned
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test helper",
+		Prompt:       "help me",
+		SubagentType: "helper",
+	})
+	if err != nil {
+		t.Fatalf("Spawn error: %v", err)
+	}
+	if result.AgentID == "" {
+		t.Error("expected non-empty AgentID from spawned helper agent")
+	}
+}
+
+func TestManager_ReloadOverridesBuiltIn(t *testing.T) {
+	// Verify that a file-based agent with the same name as a built-in overrides it
+	tmpDir := t.TempDir()
+	agentDir := tmpDir + "/.claude/agents"
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Create an agent with the same name as built-in "Explore"
+	agentContent := `---
+name: Explore
+description: Custom explore agent override
+model: sonnet
+---
+Custom explore prompt.
+`
+	if err := os.WriteFile(agentDir+"/Explore.md", []byte(agentContent), 0o644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	client := &mockLLMClient{}
+	mgr := newTestManager(client)
+
+	if err := mgr.Reload(tmpDir); err != nil {
+		t.Fatalf("Reload error: %v", err)
+	}
+
+	defs := mgr.Definitions()
+	exploreDef, ok := defs["Explore"]
+	if !ok {
+		t.Fatal("expected 'Explore' in definitions")
+	}
+
+	// Project source (30) should override built-in (0)
+	if exploreDef.Description != "Custom explore agent override" {
+		t.Errorf("description = %q, want 'Custom explore agent override'", exploreDef.Description)
+	}
+	if exploreDef.Source != SourceProject {
+		t.Errorf("source = %v, want SourceProject", exploreDef.Source)
+	}
 }
 
 // --- Stub Tests for Unimplemented Features ---
