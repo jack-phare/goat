@@ -134,6 +134,24 @@ When you run the example, provider config is resolved in this order:
  └────────┬─────────┘
           │
           ▼
+ ┌──────────────────────┐
+ │  llm.FetchPricing()  │
+ │                      │
+ │  GET {baseURL}/../   │
+ │  model/info          │
+ │                      │
+ │  Merges per-model    │
+ │  pricing into        │
+ │  DefaultPricing.     │
+ │                      │
+ │  Non-fatal: logs     │
+ │  warning on failure, │
+ │  falls back to       │
+ │  hardcoded Claude    │
+ │  prices.             │
+ └────────┬─────────────┘
+          │
+          ▼
  ┌──────────────────┐
  │  llm.NewClient() │
  │                  │

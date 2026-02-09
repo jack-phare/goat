@@ -63,6 +63,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Fetch model pricing from proxy (non-fatal on failure).
+	if err := llm.FetchPricing(context.Background(), rc.BaseURL, rc.APIKey); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch pricing: %v\n", err)
+	}
+
 	fmt.Printf("Provider: %s\n", rc.Provider)
 	fmt.Printf("Base URL: %s\n", rc.BaseURL)
 	fmt.Printf("Model:    %s\n", rc.Model)

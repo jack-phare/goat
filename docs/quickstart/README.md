@@ -186,6 +186,8 @@ func main() {
 
 **Important:** Set `config.Model` to match the LLM client model. The `DefaultConfig()` defaults to a Claude model, which won't work with non-Anthropic providers.
 
+**Cost tracking:** By default, only hardcoded Claude model prices are loaded. For proxy-based providers (LiteLLM), call `llm.FetchPricing(ctx, baseURL, apiKey)` before creating the agent to pull per-model pricing from the proxy's `/model/info` endpoint. This is non-fatal — if the proxy is unreachable, hardcoded pricing is used as a fallback.
+
 ## 4. Provider Configuration
 
 Goat's LLM client speaks the OpenAI-compatible `/v1/chat/completions` SSE protocol. It works with any provider that implements this API.
@@ -225,9 +227,18 @@ client := llm.NewClient(llm.ClientConfig{
 If you run a [LiteLLM](https://docs.litellm.ai/) proxy, all providers are unified behind one endpoint:
 
 ```go
+baseURL := "http://localhost:4000/v1"
+apiKey  := os.Getenv("EXECUTOR_LITELLM_KEY")
+
+// Fetch per-model pricing from the proxy (non-fatal on failure).
+// This enables accurate cost tracking for all proxy models.
+if err := llm.FetchPricing(ctx, baseURL, apiKey); err != nil {
+    log.Printf("Warning: could not fetch pricing: %v", err)
+}
+
 client := llm.NewClient(llm.ClientConfig{
-    BaseURL: "http://localhost:4000/v1",
-    APIKey:  os.Getenv("EXECUTOR_LITELLM_KEY"),
+    BaseURL: baseURL,
+    APIKey:  apiKey,
     Model:   "gpt-5-nano", // use model names as configured in your LiteLLM proxy
 })
 ```
@@ -365,7 +376,7 @@ registry.Register(&tools.GrepTool{CWD: cwd})
 ## 8. Running Tests for a Specific Package
 
 ```bash
-# LLM client (SSE parsing, accumulation, cost tracking)
+# LLM client (SSE parsing, accumulation, cost tracking, dynamic pricing)
 go test -v ./pkg/llm/...
 
 # Agentic loop (state machine, tool execution, multi-turn)
@@ -386,7 +397,7 @@ go test ./pkg/llm/... -run TestGolden -update
 ```
 pkg/
 ├── agent/      Core agentic loop, Query type, config, stubs
-├── llm/        LLM client, SSE parser, stream accumulator, cost tracker
+├── llm/        LLM client, SSE parser, stream accumulator, cost tracker, dynamic pricing
 ├── types/      SDKMessage types, content blocks, control protocol
 ├── tools/      Tool interface + 21 implementations + task manager
 ├── prompt/     System prompt assembly from 133 embedded prompt files

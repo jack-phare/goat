@@ -14,16 +14,33 @@ type ModelPricing struct {
 	CacheCreatePerMTok float64 // USD per 1M cache-creation tokens
 }
 
-// DefaultPricing for known models.
+// DefaultPricing for known models. Access via GetPricing/SetPricing for thread safety.
 var DefaultPricing = map[string]ModelPricing{
 	"claude-opus-4-5-20250514":   {InputPerMTok: 15.0, OutputPerMTok: 75.0, CacheReadPerMTok: 1.50, CacheCreatePerMTok: 18.75},
 	"claude-sonnet-4-5-20250929": {InputPerMTok: 3.0, OutputPerMTok: 15.0, CacheReadPerMTok: 0.30, CacheCreatePerMTok: 3.75},
 	"claude-haiku-4-5-20251001":  {InputPerMTok: 0.80, OutputPerMTok: 4.0, CacheReadPerMTok: 0.08, CacheCreatePerMTok: 1.0},
 }
 
+var pricingMu sync.RWMutex
+
+// GetPricing returns the pricing for a model and whether it was found.
+func GetPricing(model string) (ModelPricing, bool) {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+	p, ok := DefaultPricing[model]
+	return p, ok
+}
+
+// SetPricing sets the pricing for a model. Safe for concurrent use.
+func SetPricing(model string, p ModelPricing) {
+	pricingMu.Lock()
+	defer pricingMu.Unlock()
+	DefaultPricing[model] = p
+}
+
 // CalculateCost computes the USD cost for a single API response.
 func CalculateCost(model string, usage types.BetaUsage) float64 {
-	pricing, ok := DefaultPricing[model]
+	pricing, ok := GetPricing(model)
 	if !ok {
 		return 0
 	}
