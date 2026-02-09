@@ -1,2 +1,7 @@
 .env
 .env.*
+!.env.example
+
+# Compiled binaries
+/example
+*.exe

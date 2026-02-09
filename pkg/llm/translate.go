@@ -33,17 +33,27 @@ func translateUsage(u *Usage) types.BetaUsage {
 	}
 }
 
-// toRequestModel prepends the LiteLLM provider prefix.
+// toRequestModel prepends the LiteLLM "anthropic/" prefix for bare Claude model names.
+// Models that already contain a "/" (provider-prefixed) or non-Claude models pass through as-is.
 func toRequestModel(model string) string {
-	if strings.HasPrefix(model, "anthropic/") {
+	// Already provider-prefixed (e.g. "anthropic/claude-...", "openai/gpt-4o")
+	if strings.Contains(model, "/") {
 		return model
 	}
-	return "anthropic/" + model
+	// Bare Claude model name → add anthropic/ prefix for LiteLLM compatibility
+	if strings.HasPrefix(model, "claude-") {
+		return "anthropic/" + model
+	}
+	// Non-Claude model (e.g. "gpt-4o-mini", "llama-3.3-70b-versatile") → pass through
+	return model
 }
 
-// fromResponseModel strips the LiteLLM provider prefix.
+// fromResponseModel strips provider prefixes (e.g. "anthropic/", "openai/") from response model IDs.
 func fromResponseModel(model string) string {
-	return strings.TrimPrefix(model, "anthropic/")
+	if idx := strings.Index(model, "/"); idx >= 0 {
+		return model[idx+1:]
+	}
+	return model
 }
 
 // ToBetaMessage converts the accumulated CompletionResponse to an Anthropic-equivalent BetaMessage.

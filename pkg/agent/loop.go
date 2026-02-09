@@ -165,7 +165,8 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 				q.mu.Unlock()
 				break
 			}
-			// LLM error — emit and break
+			// LLM error — capture and break
+			state.LastError = err
 			state.ExitReason = ExitReason("error")
 			break
 		}
@@ -192,6 +193,7 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 				q.mu.Unlock()
 				break
 			}
+			state.LastError = err
 			state.ExitReason = ExitReason("error")
 			break
 		}

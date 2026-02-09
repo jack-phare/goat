@@ -71,10 +71,16 @@ func TestToRequestModel(t *testing.T) {
 		input    string
 		expected string
 	}{
+		// Bare Claude models get anthropic/ prefix
 		{"claude-opus-4-5-20250514", "anthropic/claude-opus-4-5-20250514"},
-		{"anthropic/claude-opus-4-5-20250514", "anthropic/claude-opus-4-5-20250514"}, // idempotent
 		{"claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4-5-20250929"},
-		{"", "anthropic/"},
+		// Already prefixed → pass through
+		{"anthropic/claude-opus-4-5-20250514", "anthropic/claude-opus-4-5-20250514"},
+		{"openai/gpt-4o", "openai/gpt-4o"},
+		// Non-Claude models → pass through as-is
+		{"gpt-4o-mini", "gpt-4o-mini"},
+		{"llama-3.3-70b-versatile", "llama-3.3-70b-versatile"},
+		{"", ""},
 	}
 
 	for _, tt := range tests {
@@ -93,7 +99,9 @@ func TestFromResponseModel(t *testing.T) {
 		expected string
 	}{
 		{"anthropic/claude-opus-4-5-20250514", "claude-opus-4-5-20250514"},
+		{"openai/gpt-4o", "gpt-4o"},
 		{"claude-opus-4-5-20250514", "claude-opus-4-5-20250514"}, // no prefix
+		{"gpt-4o-mini", "gpt-4o-mini"},                           // no prefix
 		{"anthropic/", ""},
 		{"", ""},
 	}

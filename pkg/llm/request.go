@@ -48,7 +48,9 @@ func BuildCompletionRequest(config ClientConfig, systemPrompt string, messages [
 		})
 	}
 
-	// Anthropic-specific passthrough
+	// LiteLLM passthrough for Anthropic-specific fields.
+	// Only populated when there are provider-specific fields to send;
+	// standard OpenAI-compatible providers reject unknown top-level fields.
 	extraBody := map[string]any{}
 
 	if config.MaxThinkingTokens > 0 {
@@ -62,7 +64,9 @@ func BuildCompletionRequest(config ClientConfig, systemPrompt string, messages [
 		extraBody["betas"] = config.Betas
 	}
 
-	if loopState.SessionID != "" {
+	// Only attach metadata when other extra_body fields are present
+	// (indicates LiteLLM proxy usage where extra_body is supported).
+	if len(extraBody) > 0 && loopState.SessionID != "" {
 		extraBody["metadata"] = map[string]any{
 			"user_id": loopState.SessionID,
 		}

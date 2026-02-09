@@ -33,6 +33,9 @@ type LoopState struct {
 	MaxThinkingTokens int
 	StopSequence      string // the stop sequence value if stop_sequence reason
 
+	// LastError captures the last error that caused the loop to exit.
+	LastError error
+
 	// PendingAdditionalContext collects context from hooks to inject
 	// into the system prompt on the next LLM call.
 	PendingAdditionalContext []string

@@ -1,0 +1,65 @@
+# LiteLLM proxy config for goat development.
+# Mirrors the agent-hub production config so the same models and env vars work.
+# Models are only available if the corresponding API key is set in .env.
+# See: https://docs.litellm.ai/docs/proxy/configs
+
+model_list:
+  # Azure OpenAI (primary chat models — matches agent-hub)
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: azure/gpt-4o-mini
+      api_key: os.environ/AZURE_API_KEY
+      api_base: os.environ/AZURE_API_BASE
+      api_version: "2024-06-01"
+
+  - model_name: gpt-5-nano
+    litellm_params:
+      model: azure/gpt-5-nano
+      api_key: os.environ/AZURE_API_KEY
+      api_base: os.environ/AZURE_API_BASE
+      api_version: "2024-06-01"
+
+  - model_name: gpt-5-mini
+    litellm_params:
+      model: azure/gpt-5-mini
+      api_key: os.environ/AZURE_API_KEY
+      api_base: os.environ/AZURE_API_BASE
+      api_version: "2024-06-01"
+
+  # Groq
+  - model_name: llama-3.3-70b
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+  # OpenAI (direct — uncomment if you have a key)
+  # - model_name: gpt-4o
+  #   litellm_params:
+  #     model: openai/gpt-4o
+  #     api_key: os.environ/OPENAI_API_KEY
+
+  # Anthropic (uncomment if you have a key)
+  # - model_name: claude-sonnet
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-4-20250514
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+  # OpenAI — Embeddings
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  drop_params: true     # silently drop unsupported params instead of erroring
+  set_verbose: false
+  cache: false
+  max_budget: 1000
+  budget_duration: 1mo
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true

@@ -91,8 +91,12 @@ func emitResult(ch chan<- types.SDKMessage, state *LoopState, startTime time.Tim
 		ch <- msg
 
 	default:
+		errMsgs := []string{string(state.ExitReason)}
+		if state.LastError != nil {
+			errMsgs = append(errMsgs, state.LastError.Error())
+		}
 		msg := types.NewResultError(types.ResultSubtypeErrorDuringExecution,
-			[]string{string(state.ExitReason)}, state.TurnCount, state.TotalCostUSD,
+			errMsgs, state.TurnCount, state.TotalCostUSD,
 			state.TotalUsage, nil, duration, apiMs, state.SessionID)
 		ch <- msg
 	}
