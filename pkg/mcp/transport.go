@@ -1,6 +1,12 @@
 package mcp
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
+
+// NotificationHandler is called when a server sends a notification (no ID).
+type NotificationHandler func(method string, params json.RawMessage)
 
 // Transport abstracts bidirectional JSON-RPC communication with an MCP server.
 type Transport interface {
@@ -10,4 +16,6 @@ type Transport interface {
 	Notify(ctx context.Context, method string, params any) error
 	// Close terminates the transport connection.
 	Close() error
+	// SetNotificationHandler registers a callback for server-initiated notifications.
+	SetNotificationHandler(handler NotificationHandler)
 }

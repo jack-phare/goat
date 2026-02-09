@@ -13,5 +13,6 @@ type ServerStatus struct {
 type SetServersResult struct {
 	Added   []string          `json:"added,omitempty"`
 	Removed []string          `json:"removed,omitempty"`
+	Updated []string          `json:"updated,omitempty"`
 	Errors  map[string]string `json:"errors,omitempty"`
 }

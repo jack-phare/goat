@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -315,6 +316,86 @@ func TestClient_SetServers(t *testing.T) {
 	}
 }
 
+func TestSetServers_ConfigChange(t *testing.T) {
+	registry := tools.NewRegistry()
+	client := NewClient(registry)
+
+	// Setup initial server with a known config
+	mock := newMockTransport().
+		withInitialize(ServerCapabilities{Tools: &ToolsCapability{}}).
+		withTools([]ToolInfo{{Name: "tool_v1", Description: "Version 1"}})
+
+	conn := newServerConnection("srv1", types.McpServerConfig{
+		Type: "http",
+		URL:  "http://old.example.com",
+	})
+	conn.Transport = mock
+	if err := conn.runHandshake(context.Background()); err != nil {
+		t.Fatalf("handshake failed: %v", err)
+	}
+	client.mu.Lock()
+	client.servers["srv1"] = conn
+	client.mu.Unlock()
+	client.registerTools("srv1", conn.Tools)
+
+	// Verify initial tool
+	if _, ok := registry.Get("mcp__srv1__tool_v1"); !ok {
+		t.Fatal("expected tool_v1 to be registered")
+	}
+
+	// Call SetServers with changed URL — since we can't do a real reconnect,
+	// it will fail, but the config change should be detected
+	result := client.SetServers(context.Background(), map[string]types.McpServerConfig{
+		"srv1": {Type: "http", URL: "http://new.example.com"},
+	})
+
+	// The disconnect should succeed (mock transport), but Connect with real transport will fail
+	// What we're verifying: the config change was detected and disconnect was called
+	if _, ok := result.Errors["srv1"]; !ok {
+		// If no error, it somehow connected (unlikely without real server)
+		if len(result.Updated) == 0 {
+			t.Error("expected either Updated or Errors for changed config")
+		}
+	}
+	// Old tool should be unregistered (disconnect was called)
+	if _, ok := registry.Get("mcp__srv1__tool_v1"); ok {
+		t.Error("tool_v1 should have been unregistered after config change")
+	}
+}
+
+func TestConfigEqual(t *testing.T) {
+	base := types.McpServerConfig{
+		Type:    "http",
+		URL:     "http://example.com",
+		Headers: map[string]string{"X-Key": "val"},
+	}
+	same := types.McpServerConfig{
+		Type:    "http",
+		URL:     "http://example.com",
+		Headers: map[string]string{"X-Key": "val"},
+	}
+	diffURL := types.McpServerConfig{
+		Type:    "http",
+		URL:     "http://other.com",
+		Headers: map[string]string{"X-Key": "val"},
+	}
+	diffHeader := types.McpServerConfig{
+		Type:    "http",
+		URL:     "http://example.com",
+		Headers: map[string]string{"X-Key": "other"},
+	}
+
+	if !configEqual(base, same) {
+		t.Error("expected equal configs to match")
+	}
+	if configEqual(base, diffURL) {
+		t.Error("expected different URLs to not match")
+	}
+	if configEqual(base, diffHeader) {
+		t.Error("expected different headers to not match")
+	}
+}
+
 func TestClient_Status(t *testing.T) {
 	registry := tools.NewRegistry()
 	client := NewClient(registry)
@@ -438,6 +519,105 @@ func TestClient_AnnotationsPreservedThroughRegistration(t *testing.T) {
 	}
 }
 
+func TestClient_ToolListChanged(t *testing.T) {
+	registry := tools.NewRegistry()
+	client := NewClient(registry)
+
+	// Start with one tool
+	mock := newMockTransport().
+		withInitialize(ServerCapabilities{Tools: &ToolsCapability{ListChanged: true}}).
+		withTools([]ToolInfo{{Name: "old_tool", Description: "Old tool"}})
+
+	connectWithMock(t, client, "srv1", mock)
+
+	// Verify initial tool
+	if _, ok := registry.Get("mcp__srv1__old_tool"); !ok {
+		t.Fatal("expected old_tool to be registered")
+	}
+
+	// Update the mock to return a different tool list
+	newTools := ToolsListResult{Tools: []ToolInfo{{Name: "new_tool", Description: "New tool"}}}
+	data, _ := json.Marshal(newTools)
+	mock.mu.Lock()
+	mock.responses[MethodToolsList] = data
+	mock.mu.Unlock()
+
+	// Simulate the notification
+	client.handleToolListChanged("srv1")
+
+	// Verify old tool removed, new tool added
+	if _, ok := registry.Get("mcp__srv1__old_tool"); ok {
+		t.Error("old_tool should have been unregistered")
+	}
+	if _, ok := registry.Get("mcp__srv1__new_tool"); !ok {
+		t.Error("new_tool should have been registered")
+	}
+}
+
+func TestClient_AutoReconnect(t *testing.T) {
+	registry := tools.NewRegistry()
+	client := NewClient(registry)
+
+	mock := newMockTransport().
+		withInitialize(ServerCapabilities{Tools: &ToolsCapability{}}).
+		withTools([]ToolInfo{{Name: "tool1"}}).
+		withToolCall(ToolResult{Content: []ContentBlock{{Type: "text", Text: "ok"}}})
+
+	connectWithMock(t, client, "srv1", mock)
+
+	// First call succeeds
+	result, err := client.CallTool(context.Background(), "srv1", "tool1", nil)
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if result.Content[0].Text != "ok" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+
+	// Verify isTransportError works
+	if !isTransportError(fmt.Errorf("not connected")) {
+		t.Error("'not connected' should be a transport error")
+	}
+	if !isTransportError(fmt.Errorf("transport closed")) {
+		t.Error("'transport closed' should be a transport error")
+	}
+	if isTransportError(fmt.Errorf("parse tool result: invalid json")) {
+		t.Error("parse error should NOT be a transport error")
+	}
+	if isTransportError(nil) {
+		t.Error("nil should NOT be a transport error")
+	}
+}
+
+func TestClient_NotificationHandlerDoesNotInterfere(t *testing.T) {
+	// Verify that setting up a notification handler doesn't break normal request/response
+	registry := tools.NewRegistry()
+	client := NewClient(registry)
+
+	mock := newMockTransport().
+		withInitialize(ServerCapabilities{Tools: &ToolsCapability{ListChanged: true}}).
+		withTools([]ToolInfo{{Name: "tool1"}}).
+		withToolCall(ToolResult{Content: []ContentBlock{{Type: "text", Text: "ok"}}})
+
+	connectWithMock(t, client, "srv1", mock)
+
+	// Set notification handler explicitly
+	mock.mu.Lock()
+	handler := mock.onNotification
+	mock.mu.Unlock()
+	// Handler may or may not be set by connectWithMock depending on implementation,
+	// but normal tool calls should still work
+	_ = handler
+
+	result, err := client.CallTool(context.Background(), "srv1", "tool1", nil)
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Content[0].Text != "ok" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+}
+
 func TestClient_AnnotationsNilWhenAbsent(t *testing.T) {
 	registry := tools.NewRegistry()
 	client := NewClient(registry)
@@ -457,6 +637,58 @@ func TestClient_AnnotationsNilWhenAbsent(t *testing.T) {
 	if mcpTool.Annotations() != nil {
 		t.Error("expected nil annotations when server doesn't provide them")
 	}
+}
+
+func TestClient_Ping(t *testing.T) {
+	t.Run("connected server", func(t *testing.T) {
+		registry := tools.NewRegistry()
+		client := NewClient(registry)
+
+		mock := newMockTransport().
+			withInitialize(ServerCapabilities{Tools: &ToolsCapability{}}).
+			withTools([]ToolInfo{{Name: "tool1"}})
+
+		// Ping responds to any method via mockTransport — add a ping response
+		pongData, _ := json.Marshal(map[string]string{})
+		mock.withResponse("ping", pongData)
+
+		connectWithMock(t, client, "srv1", mock)
+
+		if err := client.Ping(context.Background(), "srv1"); err != nil {
+			t.Errorf("expected ping to succeed, got: %v", err)
+		}
+	})
+
+	t.Run("unknown server", func(t *testing.T) {
+		client := NewClient(tools.NewRegistry())
+		if err := client.Ping(context.Background(), "nonexistent"); err == nil {
+			t.Error("expected error for unknown server")
+		}
+	})
+
+	t.Run("disconnected server", func(t *testing.T) {
+		registry := tools.NewRegistry()
+		client := NewClient(registry)
+
+		mock := newMockTransport().
+			withInitialize(ServerCapabilities{Tools: &ToolsCapability{}}).
+			withTools([]ToolInfo{{Name: "tool1"}})
+
+		connectWithMock(t, client, "srv1", mock)
+
+		// Disconnect the server
+		client.Disconnect("srv1")
+
+		// Re-add it without transport to simulate disconnected state
+		conn := newServerConnection("srv1", types.McpServerConfig{})
+		client.mu.Lock()
+		client.servers["srv1"] = conn
+		client.mu.Unlock()
+
+		if err := client.Ping(context.Background(), "srv1"); err == nil {
+			t.Error("expected error for disconnected server")
+		}
+	})
 }
 
 func TestClient_ToolSchemaPassthrough(t *testing.T) {

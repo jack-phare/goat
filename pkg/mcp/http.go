@@ -21,6 +21,9 @@ type HTTPTransport struct {
 	client    *http.Client
 	sessionID string // Mcp-Session-Id from server
 	mu        sync.Mutex
+
+	onNotification NotificationHandler
+	notifyMu       sync.RWMutex
 }
 
 // NewHTTPTransport creates an HTTP transport for the given URL with optional custom headers.
@@ -173,6 +176,13 @@ func (t *HTTPTransport) Notify(ctx context.Context, method string, params any) e
 	}
 
 	return nil
+}
+
+// SetNotificationHandler registers a handler for server-initiated notifications.
+func (t *HTTPTransport) SetNotificationHandler(handler NotificationHandler) {
+	t.notifyMu.Lock()
+	defer t.notifyMu.Unlock()
+	t.onNotification = handler
 }
 
 // Close is a no-op for HTTP transport (stateless per-request).

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jg-phare/goat/pkg/tools"
 	"github.com/jg-phare/goat/pkg/types"
@@ -40,6 +41,18 @@ func (c *Client) Connect(ctx context.Context, name string, config types.McpServe
 	c.mu.Lock()
 	c.servers[name] = conn
 	c.mu.Unlock()
+
+	// Wire up notification handler for tool list changes
+	conn.mu.Lock()
+	if conn.Transport != nil {
+		serverName := name
+		conn.Transport.SetNotificationHandler(func(method string, params json.RawMessage) {
+			if method == "notifications/tools/list_changed" {
+				c.handleToolListChanged(serverName)
+			}
+		})
+	}
+	conn.mu.Unlock()
 
 	// Register tools in the registry
 	c.registerTools(name, conn.Tools)
@@ -151,6 +164,27 @@ func (c *Client) SetServers(ctx context.Context, servers map[string]types.McpSer
 		}
 	}
 
+	// Check for config changes on existing servers that are still in desired set
+	for name, newConfig := range servers {
+		if existing[name] {
+			c.mu.RLock()
+			conn := c.servers[name]
+			c.mu.RUnlock()
+			if conn != nil && !configEqual(conn.Config, newConfig) {
+				// Config changed — reconnect with new config
+				if err := c.Disconnect(name); err != nil {
+					result.Errors[name] = err.Error()
+					continue
+				}
+				if err := c.Connect(ctx, name, newConfig); err != nil {
+					result.Errors[name] = err.Error()
+				} else {
+					result.Updated = append(result.Updated, name)
+				}
+			}
+		}
+	}
+
 	return result
 }
 
@@ -235,6 +269,8 @@ func (c *Client) ReadResource(ctx context.Context, serverName, uri string) (tool
 }
 
 // CallTool implements tools.MCPClient.
+// If the transport reports a connection error, CallTool attempts auto-reconnection
+// with exponential backoff before retrying the call once.
 func (c *Client) CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (tools.MCPToolCallResult, error) {
 	c.mu.RLock()
 	conn, ok := c.servers[serverName]
@@ -246,7 +282,20 @@ func (c *Client) CallTool(ctx context.Context, serverName, toolName string, args
 
 	result, err := conn.callTool(ctx, toolName, args)
 	if err != nil {
-		return tools.MCPToolCallResult{}, err
+		// Check if this is a transport-level failure worth reconnecting for
+		if isTransportError(err) {
+			if reconnErr := c.reconnectWithBackoff(ctx, serverName, 3); reconnErr == nil {
+				// Retry once after successful reconnect
+				result, err = conn.callTool(ctx, toolName, args)
+				if err != nil {
+					return tools.MCPToolCallResult{}, err
+				}
+			} else {
+				return tools.MCPToolCallResult{}, fmt.Errorf("tool call failed and reconnect failed: %w", err)
+			}
+		} else {
+			return tools.MCPToolCallResult{}, err
+		}
 	}
 
 	blocks := make([]tools.MCPContentBlock, len(result.Content))
@@ -263,6 +312,27 @@ func (c *Client) CallTool(ctx context.Context, serverName, toolName string, args
 		Content: blocks,
 		IsError: result.IsError,
 	}, nil
+}
+
+// Ping sends a health check ping to a connected MCP server.
+// Returns nil if the server responds, or an error if unreachable.
+func (c *Client) Ping(ctx context.Context, name string) error {
+	c.mu.RLock()
+	conn, ok := c.servers[name]
+	c.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown server: %q", name)
+	}
+
+	conn.mu.Lock()
+	transport := conn.Transport
+	conn.mu.Unlock()
+	if transport == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	_, err := transport.Send(ctx, newRequest(conn.nextRequestID(), "ping", nil))
+	return err
 }
 
 // Close disconnects all servers.
@@ -285,6 +355,108 @@ func (c *Client) Close() error {
 		return fmt.Errorf("close errors: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// reconnectWithBackoff attempts to reconnect to a server with exponential backoff.
+func (c *Client) reconnectWithBackoff(ctx context.Context, name string, maxAttempts int) error {
+	backoff := 1 * time.Second
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err := c.Reconnect(ctx, name)
+		if err == nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
+	return fmt.Errorf("reconnect failed after %d attempts", maxAttempts)
+}
+
+// configEqual compares two McpServerConfig values for equality.
+func configEqual(a, b types.McpServerConfig) bool {
+	if a.Type != b.Type || a.Command != b.Command || a.URL != b.URL {
+		return false
+	}
+	if len(a.Args) != len(b.Args) {
+		return false
+	}
+	for i := range a.Args {
+		if a.Args[i] != b.Args[i] {
+			return false
+		}
+	}
+	if len(a.Env) != len(b.Env) {
+		return false
+	}
+	for k, v := range a.Env {
+		if b.Env[k] != v {
+			return false
+		}
+	}
+	if len(a.Headers) != len(b.Headers) {
+		return false
+	}
+	for k, v := range a.Headers {
+		if b.Headers[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// isTransportError checks if an error indicates a transport-level failure
+// (disconnection, write error, etc.) as opposed to an application-level error.
+func isTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "not connected") ||
+		strings.Contains(msg, "transport closed") ||
+		strings.Contains(msg, "write to stdin") ||
+		strings.Contains(msg, "connection lost") ||
+		strings.Contains(msg, "broken pipe")
+}
+
+// handleToolListChanged re-fetches and re-registers tools when a server
+// sends a notifications/tools/list_changed notification.
+func (c *Client) handleToolListChanged(name string) {
+	c.mu.RLock()
+	conn, ok := c.servers[name]
+	c.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn.mu.Lock()
+	transport := conn.Transport
+	conn.mu.Unlock()
+	if transport == nil {
+		return
+	}
+
+	tools, err := conn.listTools(ctx)
+	if err != nil {
+		return // keep old tools
+	}
+
+	// Re-register tools atomically
+	c.registry.UnregisterMCPTools(name)
+	conn.mu.Lock()
+	conn.Tools = tools
+	conn.mu.Unlock()
+	c.registerTools(name, tools)
 }
 
 // registerTools registers MCP tools in the tool registry.

@@ -190,9 +190,9 @@ func TestIntegration_SetServersWithMocks(t *testing.T) {
 		t.Fatalf("expected 2 tools, got %d", len(registry.Names()))
 	}
 
-	// SetServers: keep keep_server, remove old_server, add new_server (will fail)
+	// SetServers: keep keep_server (same config), remove old_server, add new_server (will fail)
 	result := client.SetServers(context.Background(), map[string]types.McpServerConfig{
-		"keep_server": {Type: "stdio", Command: "whatever"}, // already exists → skip
+		"keep_server": {}, // same empty config as connectWithMock uses → unchanged
 		"new_server":  {Type: "stdio", Command: "nonexistent"},
 	})
 

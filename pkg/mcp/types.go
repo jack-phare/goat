@@ -26,7 +26,9 @@ type ServerInfo struct {
 }
 
 // ClientCapabilities declares what the client supports (sent during initialize).
-type ClientCapabilities struct{}
+type ClientCapabilities struct {
+	Experimental map[string]any `json:"experimental,omitempty"`
+}
 
 // ServerCapabilities declares what the server supports (returned during initialize).
 type ServerCapabilities struct {

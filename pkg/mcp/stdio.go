@@ -26,6 +26,9 @@ type StdioTransport struct {
 	pending map[int]chan JSONRPCResponse
 	pendMu  sync.Mutex
 
+	onNotification NotificationHandler
+	notifyMu       sync.RWMutex
+
 	done chan struct{} // closed when reader goroutine exits
 }
 
@@ -73,6 +76,7 @@ func NewStdioTransport(command string, args []string, env map[string]string) (*S
 }
 
 // readLoop reads lines from stdout and dispatches JSON-RPC responses to pending channels.
+// It also detects server-initiated notifications (messages with method but no id).
 func (t *StdioTransport) readLoop() {
 	defer close(t.done)
 
@@ -86,9 +90,33 @@ func (t *StdioTransport) readLoop() {
 			continue
 		}
 
+		// First try to detect if this is a notification (has method, no id)
+		var msg struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      *int            `json:"id,omitempty"`
+			Method  string          `json:"method,omitempty"`
+			Params  json.RawMessage `json:"params,omitempty"`
+			Result  json.RawMessage `json:"result,omitempty"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			// Skip unparseable lines (could be log output from the server)
+			continue
+		}
+
+		if msg.ID == nil && msg.Method != "" {
+			// This is a server-initiated notification
+			t.notifyMu.RLock()
+			handler := t.onNotification
+			t.notifyMu.RUnlock()
+			if handler != nil {
+				handler(msg.Method, msg.Params)
+			}
+			continue
+		}
+
+		// Standard response dispatch
 		var resp JSONRPCResponse
 		if err := json.Unmarshal(line, &resp); err != nil {
-			// Skip unparseable lines (could be log output from the server)
 			continue
 		}
 
@@ -171,6 +199,13 @@ func (t *StdioTransport) Notify(_ context.Context, method string, params any) er
 		return fmt.Errorf("write notification: %w", err)
 	}
 	return nil
+}
+
+// SetNotificationHandler registers a handler for server-initiated notifications.
+func (t *StdioTransport) SetNotificationHandler(handler NotificationHandler) {
+	t.notifyMu.Lock()
+	defer t.notifyMu.Unlock()
+	t.onNotification = handler
 }
 
 // Close terminates the child process: close stdin, SIGTERM, wait with timeout, SIGKILL.

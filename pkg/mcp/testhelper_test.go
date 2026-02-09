@@ -9,10 +9,12 @@ import (
 
 // mockTransport implements Transport with pre-programmed responses.
 type mockTransport struct {
-	mu        sync.Mutex
-	responses map[string]json.RawMessage // method → result JSON
-	closed    bool
-	notified  []string // methods that were notified
+	mu             sync.Mutex
+	responses      map[string]json.RawMessage // method → result JSON
+	closed         bool
+	notified       []string // methods that were notified
+	onNotification NotificationHandler
+	failNext       bool // if true, next Send returns an error
 }
 
 func newMockTransport() *mockTransport {
@@ -77,6 +79,11 @@ func (m *mockTransport) Send(_ context.Context, req JSONRPCRequest) (JSONRPCResp
 		return JSONRPCResponse{}, fmt.Errorf("transport closed")
 	}
 
+	if m.failNext {
+		m.failNext = false
+		return JSONRPCResponse{}, fmt.Errorf("transport error: connection lost")
+	}
+
 	result, ok := m.responses[req.Method]
 	if !ok {
 		return JSONRPCResponse{
@@ -107,6 +114,12 @@ func (m *mockTransport) Notify(_ context.Context, method string, _ any) error {
 	}
 	m.notified = append(m.notified, method)
 	return nil
+}
+
+func (m *mockTransport) SetNotificationHandler(handler NotificationHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onNotification = handler
 }
 
 func (m *mockTransport) Close() error {

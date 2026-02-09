@@ -128,6 +128,116 @@ func TestMCPTool_EmptyResult(t *testing.T) {
 	}
 }
 
+func TestMCPTool_RequiredFieldValidation(t *testing.T) {
+	client := &mockMCPClient{toolResult: MCPToolCallResult{
+		Content: []MCPContentBlock{{Type: "text", Text: "ok"}},
+	}}
+
+	t.Run("missing required field", func(t *testing.T) {
+		tool := &MCPTool{
+			ServerName: "srv",
+			ToolName:   "search",
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string"},
+				},
+				"required": []any{"query"},
+			},
+			Client: client,
+		}
+
+		out, err := tool.Execute(context.Background(), map[string]any{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !out.IsError {
+			t.Error("expected error for missing required field")
+		}
+		if out.Content == "" {
+			t.Error("expected error message")
+		}
+	})
+
+	t.Run("all required fields present", func(t *testing.T) {
+		tool := &MCPTool{
+			ServerName: "srv",
+			ToolName:   "search",
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string"},
+				},
+				"required": []any{"query"},
+			},
+			Client: client,
+		}
+
+		out, err := tool.Execute(context.Background(), map[string]any{"query": "hello"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.IsError {
+			t.Errorf("unexpected error: %s", out.Content)
+		}
+	})
+
+	t.Run("no required fields in schema", func(t *testing.T) {
+		tool := &MCPTool{
+			ServerName: "srv",
+			ToolName:   "search",
+			Schema: map[string]any{
+				"type": "object",
+			},
+			Client: client,
+		}
+
+		out, err := tool.Execute(context.Background(), map[string]any{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.IsError {
+			t.Errorf("unexpected error: %s", out.Content)
+		}
+	})
+
+	t.Run("nil schema", func(t *testing.T) {
+		tool := &MCPTool{
+			ServerName: "srv",
+			ToolName:   "search",
+			Client:     client,
+		}
+
+		out, err := tool.Execute(context.Background(), map[string]any{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.IsError {
+			t.Errorf("unexpected error: %s", out.Content)
+		}
+	})
+
+	t.Run("required as string slice", func(t *testing.T) {
+		tool := &MCPTool{
+			ServerName: "srv",
+			ToolName:   "search",
+			Schema: map[string]any{
+				"type":     "object",
+				"required": []string{"query", "limit"},
+			},
+			Client: client,
+		}
+
+		out, err := tool.Execute(context.Background(), map[string]any{"query": "hello"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !out.IsError {
+			t.Error("expected error for missing 'limit' field")
+		}
+	})
+}
+
 func TestMCPTool_AnnotationsAccessor(t *testing.T) {
 	ro := true
 	destr := false
