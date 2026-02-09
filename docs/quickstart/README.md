@@ -259,31 +259,31 @@ Available models on the production (agent-hub) proxy:
 
 ## 5. Dev LiteLLM Proxy (Optional)
 
-A self-contained LiteLLM proxy is included for contributors who don't have a production proxy running. It mirrors the agent-hub production config (Azure OpenAI + Groq) so the same env vars work locally.
+A self-contained dev stack is included with LiteLLM proxy, Langfuse observability, and Postgres. No external dependencies needed — everything runs in Docker.
 
 ```bash
-# 1. Copy env template and fill in your keys
-cp dev/.env.example dev/.env
-# Edit dev/.env — at minimum set AZURE_API_KEY + AZURE_API_BASE, or GROQ_API_KEY
+# 1. Start the stack (reads provider keys from root .env)
+docker compose --env-file .env -f dev/docker-compose.yml up -d
 
-# 2. Start the proxy (LiteLLM + Postgres)
-docker compose -f dev/docker-compose.yml up -d
-
-# 3. Verify it's running
+# 2. Verify it's running
 curl http://localhost:4000/v1/models -H "Authorization: Bearer sk-dev-key"
 
-# 4. Run the example against the dev proxy
+# 3. Run the example against the dev proxy
 LITELLM_MASTER_KEY=sk-dev-key go run ./cmd/example/ -provider litellm -prompt "What is 2+2?"
+
+# 4. View traces in Langfuse
+open http://localhost:3001  # admin@goat.local / admin1234
 
 # 5. Tear down when done
 docker compose -f dev/docker-compose.yml down
 ```
 
-The dev proxy includes:
-- **Azure OpenAI** models: `gpt-4o-mini`, `gpt-5-nano`, `gpt-5-mini`
-- **Groq**: `llama-3.3-70b`
-- **Langfuse** observability (optional — set keys in `.env` to enable)
-- **Postgres** for model storage and budget tracking
+The dev stack includes:
+- **LiteLLM proxy** on port 4000 — Azure OpenAI (`gpt-4o-mini`, `gpt-5-nano`, `gpt-5-mini`), Groq (`llama-3.3-70b`)
+- **Langfuse** on port 3001 — auto-provisioned with project `goat-dev`, no manual setup needed
+- **Postgres** — shared by LiteLLM and Langfuse
+
+All LLM calls through the proxy are automatically traced in Langfuse with cost, latency, token counts, and full input/output.
 
 The example's `-provider litellm` checks env vars in order: `EXECUTOR_LITELLM_KEY` (production), `LITELLM_MASTER_KEY` (dev), `LITELLM_API_KEY` (generic).
 

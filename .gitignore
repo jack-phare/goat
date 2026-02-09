@@ -5,3 +5,14 @@
 # Compiled binaries
 /example
 *.exe
+
+# Eval artifacts
+evals/.venv/
+evals/__pycache__/
+evals/goat-eval-linux
+logs/
+
+# Build artifacts
+anthropic-ai-claude-code-*.tgz
+
+thoughts/

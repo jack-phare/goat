@@ -1,31 +1,67 @@
-# LiteLLM proxy for goat development.
-# Mirrors the agent-hub production stack so the same models and env vars work.
+# LiteLLM proxy + Langfuse observability for goat development.
+# Self-contained — no external dependencies needed.
 #
 # Usage:
-#   cp dev/.env.example dev/.env   # then fill in your keys
-#   docker compose -f dev/docker-compose.yml up -d
+#   docker compose --env-file .env -f dev/docker-compose.yml up -d
 #   go run ./cmd/example/ -provider litellm
 #
+# Provider keys are read from the project root .env file.
+#
+# Langfuse UI: http://localhost:3001  (admin@goat.local / admin)
 # Check available models:
 #   curl http://localhost:4000/v1/models -H "Authorization: Bearer sk-dev-key"
 
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: goat-postgres
     environment:
-      - POSTGRES_DB=litellm
-      - POSTGRES_USER=litellm
-      - POSTGRES_PASSWORD=litellm
+      - POSTGRES_USER=goat
+      - POSTGRES_PASSWORD=goat
+      - POSTGRES_DB=goat
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      test: ["CMD-SHELL", "pg_isready -U goat"]
       interval: 5s
       timeout: 3s
       retries: 5
 
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: goat-langfuse
+    ports:
+      - "3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://goat:goat@postgres:5432/langfuse
+      - NEXTAUTH_URL=http://localhost:3001
+      - NEXTAUTH_SECRET=goat-dev-secret-not-for-production
+      - SALT=goat-dev-salt-not-for-production
+      # Auto-provision org, project, and API keys on first boot
+      - LANGFUSE_INIT_ORG_ID=goat
+      - LANGFUSE_INIT_ORG_NAME=Goat Dev
+      - LANGFUSE_INIT_PROJECT_ID=goat-dev
+      - LANGFUSE_INIT_PROJECT_NAME=Goat Dev
+      - LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-goat-dev
+      - LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-goat-dev
+      - LANGFUSE_INIT_USER_EMAIL=admin@goat.local
+      - LANGFUSE_INIT_USER_PASSWORD=admin1234
+      - LANGFUSE_INIT_USER_NAME=Admin
+      - HOSTNAME=0.0.0.0
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/public/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
+    container_name: goat-litellm
     ports:
       - "4000:4000"
     volumes:
@@ -33,25 +69,28 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      langfuse:
+        condition: service_healthy
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-dev-key}
-      - DATABASE_URL=postgresql://litellm:litellm@postgres:5432/litellm
+      - DATABASE_URL=postgresql://goat:goat@postgres:5432/litellm
       # Provider keys (leave blank if unused)
       - AZURE_API_KEY=${AZURE_API_KEY:-}
       - AZURE_API_BASE=${AZURE_API_BASE:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Langfuse (optional — leave blank to skip)
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      - LANGFUSE_HOST=${LANGFUSE_HOST:-}
+      # Langfuse — points to local container (no external dependency)
+      - LANGFUSE_PUBLIC_KEY=pk-lf-goat-dev
+      - LANGFUSE_SECRET_KEY=sk-lf-goat-dev
+      - LANGFUSE_HOST=http://langfuse:3000
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 15s
 
 volumes:
   pgdata:

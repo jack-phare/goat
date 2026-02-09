@@ -1,0 +1,10 @@
+services:
+  default:
+    build:
+      context: ..
+      dockerfile: evals/Dockerfile
+    init: true
+    cpus: 4
+    mem_limit: 8g
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
