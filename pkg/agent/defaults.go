@@ -41,6 +41,9 @@ func DefaultRegistry(cwd string, mcpClient tools.MCPClient) *tools.Registry {
 	// Subagent
 	registry.Register(&tools.AgentTool{}) // Spawner set by host app
 
+	// Skill
+	registry.Register(&tools.SkillTool{}) // Skills provider set by host app
+
 	// MCP resource tools (mcpClient may be nil → falls back to StubMCPClient)
 	registry.Register(&tools.ListMcpResourcesTool{Client: mcpClient})
 	registry.Register(&tools.ReadMcpResourceTool{Client: mcpClient})

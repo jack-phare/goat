@@ -92,6 +92,15 @@ type ContextCompactor interface {
 	Compact(ctx context.Context, req CompactRequest) ([]llm.ChatMessage, error)
 }
 
+// SkillProvider gives access to the loaded skill registry.
+type SkillProvider interface {
+	GetSkill(name string) (types.SkillEntry, bool)
+	ListSkills() []types.SkillEntry
+	SkillNames() []string
+	SlashCommands() []string
+	FormatSkillsList() string
+}
+
 // SessionStore manages session persistence.
 type SessionStore interface {
 	// Lifecycle

@@ -15,6 +15,13 @@ func emitInit(ch chan<- types.SDKMessage, config *AgentConfig, state *LoopState)
 		toolNames = config.ToolRegistry.Names()
 	}
 
+	var skillNames []string
+	var slashCommands []string
+	if config.Skills != nil {
+		skillNames = config.Skills.SkillNames()
+		slashCommands = config.Skills.SlashCommands()
+	}
+
 	msg := &types.SystemInitMessage{
 		BaseMessage:       types.BaseMessage{UUID: uuid.New(), SessionID: state.SessionID},
 		Type:              types.MessageTypeSystem,
@@ -24,6 +31,8 @@ func emitInit(ch chan<- types.SDKMessage, config *AgentConfig, state *LoopState)
 		CWD:               config.CWD,
 		PermissionMode:    config.PermissionMode,
 		Tools:             toolNames,
+		Skills:            skillNames,
+		SlashCommands:     slashCommands,
 	}
 	ch <- msg
 }
@@ -52,22 +61,46 @@ func emitToolProgress(ch chan<- types.SDKMessage, toolName, toolUseID string, el
 	ch <- msg
 }
 
+// buildModelUsage creates a per-model usage map from the CostTracker.
+func buildModelUsage(ct *llm.CostTracker) map[string]types.ModelUsage {
+	if ct == nil {
+		return nil
+	}
+	breakdown := ct.ModelBreakdown()
+	if len(breakdown) == 0 {
+		return nil
+	}
+	modelUsage := make(map[string]types.ModelUsage, len(breakdown))
+	for model, accum := range breakdown {
+		modelUsage[model] = types.ModelUsage{
+			InputTokens:              accum.InputTokens,
+			OutputTokens:             accum.OutputTokens,
+			CacheReadInputTokens:     accum.CacheReadInputTokens,
+			CacheCreationInputTokens: accum.CacheCreationInputTokens,
+			CostUSD:                  accum.CostUSD,
+		}
+	}
+	return modelUsage
+}
+
 // emitTurnResult sends a per-turn result in multi-turn mode (not final).
-func emitTurnResult(ch chan<- types.SDKMessage, state *LoopState, startTime time.Time, apiDuration time.Duration) {
+func emitTurnResult(ch chan<- types.SDKMessage, config *AgentConfig, state *LoopState, startTime time.Time, apiDuration time.Duration) {
 	duration := time.Since(startTime).Milliseconds()
 	apiMs := apiDuration.Milliseconds()
 	result := extractLastTextContent(state)
+	modelUsage := buildModelUsage(config.CostTracker)
 	msg := types.NewResultSuccess(result, state.TurnCount, state.TotalCostUSD,
-		state.TotalUsage, nil, duration, apiMs, state.SessionID)
+		state.TotalUsage, modelUsage, duration, apiMs, state.SessionID)
 	// Mark as a turn result (not final) by setting subtype
 	msg.Subtype = types.ResultSubtypeSuccessTurn
 	ch <- msg
 }
 
 // emitResult sends the final ResultMessage when the loop terminates.
-func emitResult(ch chan<- types.SDKMessage, state *LoopState, startTime time.Time, apiDuration time.Duration) {
+func emitResult(ch chan<- types.SDKMessage, config *AgentConfig, state *LoopState, startTime time.Time, apiDuration time.Duration) {
 	duration := time.Since(startTime).Milliseconds()
 	apiMs := apiDuration.Milliseconds()
+	modelUsage := buildModelUsage(config.CostTracker)
 
 	// Determine result subtype from exit reason
 	switch state.ExitReason {
@@ -75,19 +108,19 @@ func emitResult(ch chan<- types.SDKMessage, state *LoopState, startTime time.Tim
 		// Extract final text from the last assistant message for the result
 		result := extractLastTextContent(state)
 		msg := types.NewResultSuccess(result, state.TurnCount, state.TotalCostUSD,
-			state.TotalUsage, nil, duration, apiMs, state.SessionID)
+			state.TotalUsage, modelUsage, duration, apiMs, state.SessionID)
 		ch <- msg
 
 	case ExitMaxTurns:
 		msg := types.NewResultError(types.ResultSubtypeErrorMaxTurns,
 			[]string{"max turns reached"}, state.TurnCount, state.TotalCostUSD,
-			state.TotalUsage, nil, duration, apiMs, state.SessionID)
+			state.TotalUsage, modelUsage, duration, apiMs, state.SessionID)
 		ch <- msg
 
 	case ExitMaxBudget:
 		msg := types.NewResultError(types.ResultSubtypeErrorMaxBudget,
 			[]string{"max budget exceeded"}, state.TurnCount, state.TotalCostUSD,
-			state.TotalUsage, nil, duration, apiMs, state.SessionID)
+			state.TotalUsage, modelUsage, duration, apiMs, state.SessionID)
 		ch <- msg
 
 	default:
@@ -97,7 +130,7 @@ func emitResult(ch chan<- types.SDKMessage, state *LoopState, startTime time.Tim
 		}
 		msg := types.NewResultError(types.ResultSubtypeErrorDuringExecution,
 			errMsgs, state.TurnCount, state.TotalCostUSD,
-			state.TotalUsage, nil, duration, apiMs, state.SessionID)
+			state.TotalUsage, modelUsage, duration, apiMs, state.SessionID)
 		ch <- msg
 	}
 }

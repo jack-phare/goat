@@ -41,6 +41,7 @@ const (
 	ReminderMCPResourceNoContent  ReminderID = "mcp_resource_no_content"
 	ReminderMCPResourceNoDisplay  ReminderID = "mcp_resource_no_displayable"
 	ReminderPlanFileRef           ReminderID = "plan_file_ref"
+	ReminderAvailableSkills       ReminderID = "available_skills"
 )
 
 // reminderFileMap maps reminder IDs to their embedded file names.
@@ -82,6 +83,7 @@ var reminderFileMap = map[ReminderID]string{
 	ReminderMCPResourceNoContent:  "system-reminder-mcp-resource-no-content.md",
 	ReminderMCPResourceNoDisplay:  "system-reminder-mcp-resource-no-displayable-content.md",
 	ReminderPlanFileRef:           "system-reminder-plan-file-reference.md",
+	ReminderAvailableSkills:       "system-reminder-available-skills.md",
 }
 
 // GetReminder loads a system reminder by ID, performing variable substitution

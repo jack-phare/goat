@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 
@@ -16,8 +17,9 @@ type AgentConfig struct {
 	SystemPrompt types.SystemPromptConfig
 
 	// Execution limits
-	MaxTurns     int     // 0 = unlimited
-	MaxBudgetUSD float64 // 0 = unlimited
+	MaxTurns     int                // 0 = unlimited
+	MaxBudgetUSD float64            // 0 = unlimited
+	ModelBudgets map[string]float64 // per-model USD budget limits (model ID → max USD)
 
 	// Session
 	CWD            string
@@ -35,8 +37,11 @@ type AgentConfig struct {
 	DebugFile string // path for debug output
 
 	// Model control
-	FallbackModel   string // for automatic model fallback
-	MaxThinkingTkns *int   // thinking token limit (wire to LLM request)
+	FallbackModel            string  // for automatic model fallback
+	CompactorModel           string  // model to use for context compaction (default: haiku)
+	MaxThinkingTkns          *int    // thinking token limit (wire to LLM request)
+	BudgetDowngradeThreshold float64 // fraction of MaxBudgetUSD (0.0-1.0) to trigger downgrade
+	BudgetDowngradeModel     string  // model to switch to when threshold is exceeded
 
 	// Additional directories for prompt assembly
 	AdditionalDirs []string
@@ -83,12 +88,21 @@ type AgentConfig struct {
 	BackgroundMode    bool // auto-deny unpermitted tools, disable AskUser, no MCP
 	CanSpawnSubagents bool // false = Agent tool filtered from registry
 
+	// Parallel tool execution
+	MaxParallelTools int // max concurrency for side-effect-free tools (0 = default 5)
+
 	// Team context (set when running as a teammate)
 	TeamName  string // non-empty when part of a team
 	AgentName string // this agent's name within the team
 
 	// Prompt version
 	PromptVersion string // e.g., "2.1.37"
+
+	// Context window resolution (injected to avoid import cycle with pkg/context)
+	ContextLimitFunc func(model string, betas []string) int
+
+	// Dynamic model selection: automatically choose model based on estimated task complexity.
+	DynamicModelConfig *DynamicModelConfig
 
 	// Dependencies (injected)
 	LLMClient    llm.Client
@@ -99,6 +113,33 @@ type AgentConfig struct {
 	Compactor    ContextCompactor
 	CostTracker  *llm.CostTracker
 	SessionStore SessionStore // nil = no persistence (default)
+	Skills       SkillProvider // nil = no skills
+}
+
+// DynamicModelConfig configures automatic model selection based on estimated prompt complexity.
+type DynamicModelConfig struct {
+	// SimpleModel is used when prompt tokens < SimpleThresholdTokens.
+	SimpleModel           string
+	SimpleThresholdTokens int // default: 1000
+
+	// DefaultModel uses config.Model (no field needed).
+
+	// ComplexModel is used when prompt tokens > ComplexThresholdTokens.
+	ComplexModel           string
+	ComplexThresholdTokens int // default: 10000
+}
+
+// ValidateModel checks if the configured model has pricing data.
+// Returns a warning string if the model is unknown (cost tracking will report $0).
+// Returns empty string if the model is valid.
+func (c *AgentConfig) ValidateModel() string {
+	if c.Model == "" {
+		return "no model configured"
+	}
+	if !llm.IsKnownModel(c.Model) {
+		return fmt.Sprintf("model %q not found in pricing data; cost tracking will report $0", c.Model)
+	}
+	return ""
 }
 
 // DefaultConfig returns an AgentConfig with sensible defaults.

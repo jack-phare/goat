@@ -24,10 +24,11 @@ func RunLoop(ctx context.Context, prompt string, config AgentConfig) *Query {
 	}
 
 	q := &Query{
-		messages: ch,
-		done:     make(chan struct{}),
-		state:    state,
-		cancel:   cancel,
+		messages:    ch,
+		done:        make(chan struct{}),
+		state:       state,
+		costTracker: config.CostTracker,
+		cancel:      cancel,
 	}
 
 	// Set up multi-turn channels if enabled
@@ -82,6 +83,18 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 	// 4. Assemble system prompt
 	systemPrompt := config.Prompter.Assemble(config)
 
+	// 4.5 Dynamic model selection (first turn only, based on prompt complexity)
+	if config.DynamicModelConfig != nil && state.Model == "" {
+		dmc := config.DynamicModelConfig
+		promptTokens := len(prompt) / 4 // rough estimate
+		if dmc.SimpleThresholdTokens > 0 && promptTokens < dmc.SimpleThresholdTokens && dmc.SimpleModel != "" {
+			state.Model = dmc.SimpleModel
+		} else if dmc.ComplexThresholdTokens > 0 && promptTokens > dmc.ComplexThresholdTokens && dmc.ComplexModel != "" {
+			state.Model = dmc.ComplexModel
+		}
+		// else: use config.Model (default)
+	}
+
 	// 5. Main loop
 	for {
 		// Process any pending control requests (non-blocking)
@@ -93,6 +106,16 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 		if reason := checkTermination(ctx, config, state); reason != "" {
 			state.ExitReason = reason
 			break
+		}
+
+		// 5.4 Budget-aware model downgrade
+		if config.BudgetDowngradeThreshold > 0 && config.MaxBudgetUSD > 0 &&
+			config.BudgetDowngradeModel != "" && !state.BudgetDowngraded {
+			threshold := config.MaxBudgetUSD * config.BudgetDowngradeThreshold
+			if state.TotalCostUSD >= threshold {
+				state.Model = config.BudgetDowngradeModel
+				state.BudgetDowngraded = true
+			}
 		}
 
 		// 5.5 Proactive compaction check
@@ -165,10 +188,22 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 				q.mu.Unlock()
 				break
 			}
-			// LLM error — capture and break
-			state.LastError = err
-			state.ExitReason = ExitReason("error")
-			break
+			// Try fallback model on retriable errors (once only)
+			if config.FallbackModel != "" && isRetriableModelError(err) && !state.UsingFallback {
+				state.UsingFallback = true
+				state.Model = config.FallbackModel
+				req = llm.BuildCompletionRequest(
+					llm.ClientConfig{Model: config.FallbackModel, MaxTokens: 16384, MaxThinkingTokens: maxThinkingTokens},
+					effectivePrompt, state.Messages, llmTools,
+					llm.LoopState{SessionID: state.SessionID},
+				)
+				stream, err = config.LLMClient.Complete(ctx, req)
+			}
+			if err != nil {
+				state.LastError = err
+				state.ExitReason = ExitReason("error")
+				break
+			}
 		}
 
 		// 8. Accumulate response with streaming callbacks
@@ -221,6 +256,8 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 		// 11. Check stop reason
 		switch resp.StopReason {
 		case "end_turn":
+			state.ActiveSkill = nil // clear skill scope on turn end
+
 			// Fire Stop hook and check if any hook wants to continue
 			stopResults, _ := config.Hooks.Fire(ctx, types.HookEventStop, nil)
 			if shouldContinue(stopResults) {
@@ -230,7 +267,7 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 
 			if config.MultiTurn {
 				// Multi-turn: emit per-turn result, then wait for more input
-				emitTurnResult(ch, state, startTime, apiDuration)
+				emitTurnResult(ch, config, state, startTime, apiDuration)
 
 				// Wait for next user message or close
 				if waitForInput(ctx, config, state, ch, q) {
@@ -280,6 +317,9 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			// Execute tools
 			toolResults, interrupted := executeTools(ctx, toolBlocks, config, state, ch)
 
+			// Activate skill permission scope if a Skill tool was invoked
+			setActiveSkillScope(toolBlocks, config, state)
+
 			// Append tool results as messages
 			toolMsgs := llm.ConvertToToolMessages(toolResults)
 			state.Messages = append(state.Messages, toolMsgs...)
@@ -288,6 +328,9 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			for _, tm := range toolMsgs {
 				persistMessage(config.SessionStore, state.SessionID, tm)
 			}
+
+			// Lightweight pruning of old tool results to manage context pressure
+			state.Messages = pruneOldToolResults(state.Messages, 10)
 
 			if interrupted {
 				state.ExitReason = ExitInterrupted
@@ -313,7 +356,7 @@ done:
 	finalizeSession(config, state)
 
 	// 12. Emit result message
-	emitResult(ch, state, startTime, apiDuration)
+	emitResult(ch, config, state, startTime, apiDuration)
 
 	// 13. Fire SessionEnd hook
 	config.Hooks.Fire(ctx, types.HookEventSessionEnd, map[string]any{
@@ -330,6 +373,7 @@ func waitForInput(ctx context.Context, config *AgentConfig, state *LoopState, ch
 			if !ok {
 				return false // input channel closed
 			}
+			state.ActiveSkill = nil // clear skill scope on new user input
 			// Append user message to conversation
 			userMsg := llm.ChatMessage{Role: "user", Content: string(msg)}
 			state.Messages = append(state.Messages, userMsg)
@@ -490,6 +534,16 @@ func checkTermination(ctx context.Context, config *AgentConfig, state *LoopState
 		return ExitMaxBudget
 	}
 
+	// Check per-model budgets
+	if len(config.ModelBudgets) > 0 && config.CostTracker != nil {
+		breakdown := config.CostTracker.ModelBreakdown()
+		for model, limit := range config.ModelBudgets {
+			if accum, ok := breakdown[model]; ok && accum.CostUSD >= limit {
+				return ExitMaxBudget
+			}
+		}
+	}
+
 	return "" // no termination
 }
 
@@ -502,13 +556,32 @@ func calculateTokenBudget(config *AgentConfig, state *LoopState, systemPrompt st
 	}
 	sysTokens := len(systemPrompt) / 4
 
-	contextLimit := 200_000 // default for Claude models
+	// Use actual context limit for current model
+	contextLimit := 200_000
+	if config.ContextLimitFunc != nil {
+		model := config.Model
+		if state.Model != "" {
+			model = state.Model
+		}
+		contextLimit = config.ContextLimitFunc(model, config.Betas)
+	}
+
 	return TokenBudget{
 		ContextLimit:     contextLimit,
 		SystemPromptTkns: sysTokens,
 		MaxOutputTkns:    16384,
 		MessageTkns:      msgTokens,
 	}
+}
+
+// isRetriableModelError checks if the error is a retriable model error
+// (rate limit, service unavailable, model not found).
+func isRetriableModelError(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "429") ||
+		strings.Contains(errStr, "503") ||
+		strings.Contains(errStr, "model_not_found") ||
+		strings.Contains(errStr, "rate_limit")
 }
 
 // estimateMessageTokens estimates the token count for a single message.
@@ -566,7 +639,7 @@ func initializeSession(config *AgentConfig, state *LoopState) {
 	_ = config.SessionStore.Create(meta)
 }
 
-// finalizeSession updates session metadata with final stats.
+// finalizeSession updates session metadata with final stats and checkpoints accessed files.
 func finalizeSession(config *AgentConfig, state *LoopState) {
 	if config.SessionStore == nil {
 		return
@@ -580,6 +653,16 @@ func finalizeSession(config *AgentConfig, state *LoopState) {
 			m.AgentName = config.AgentName
 		}
 	})
+
+	// Checkpoint accessed files for session rewind support
+	if len(state.AccessedFiles) > 0 {
+		paths := make([]string, 0, len(state.AccessedFiles))
+		for p := range state.AccessedFiles {
+			paths = append(paths, p)
+		}
+		// Best-effort: errors are non-fatal
+		_ = config.SessionStore.CreateCheckpoint(state.SessionID, "session-end", paths)
+	}
 }
 
 // RestoreSession loads a previous session's messages into the loop state.

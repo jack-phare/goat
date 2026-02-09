@@ -99,6 +99,17 @@ func (a *Assembler) Assemble(config *agent.AgentConfig) string {
 		parts = append(parts, formatOutputStyleSection(config.OutputStyle))
 	}
 
+	// 20b. Available skills (conditional: skills loaded)
+	if config.Skills != nil && len(config.Skills.SkillNames()) > 0 {
+		skillsList := config.Skills.FormatSkillsList()
+		reminder := GetReminder(ReminderAvailableSkills, map[string]string{
+			"FORMATTED_SKILLS_LIST": skillsList,
+		})
+		if reminder != "" {
+			parts = append(parts, reminder)
+		}
+	}
+
 	// 21. File read limits (always)
 	parts = append(parts, loadSystemPrompt("system-prompt-file-read-limits.md"))
 
@@ -196,6 +207,7 @@ var toolDocs = []toolDocEntry{
 	{"NotebookEdit", "tool-description-notebookedit.md"},
 	{"WebFetch", "tool-description-webfetch.md"},
 	{"WebSearch", "tool-description-websearch.md"},
+	{"Skill", "tool-description-skill.md"},
 }
 
 // formatClaudeMDSection wraps CLAUDE.md content in a section header.
