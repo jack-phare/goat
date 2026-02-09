@@ -75,14 +75,19 @@ const litellmModelInfoResponse = `{
         "input_cost_per_token": 1.1e-07,
         "output_cost_per_token": 4.4e-07,
         "cache_read_input_token_cost": 5.5e-08,
-        "cache_creation_input_token_cost": 1.375e-07
+        "cache_creation_input_token_cost": 1.375e-07,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 16384,
+        "supports_function_calling": true
       }
     },
     {
       "model_name": "gpt-5-mini",
       "model_info": {
         "input_cost_per_token": 3e-07,
-        "output_cost_per_token": 1.2e-06
+        "output_cost_per_token": 1.2e-06,
+        "max_input_tokens": 1000000,
+        "max_output_tokens": 32768
       }
     },
     {
@@ -111,7 +116,7 @@ func TestFetchPricing(t *testing.T) {
 	origPricing := snapshotPricing()
 	defer restorePricing(origPricing)
 
-	err := FetchPricing(context.Background(), srv.URL+"/v1", "test-key")
+	result, err := FetchPricing(context.Background(), srv.URL+"/v1", "test-key")
 	if err != nil {
 		t.Fatalf("FetchPricing returned error: %v", err)
 	}
@@ -146,6 +151,20 @@ func TestFetchPricing(t *testing.T) {
 		t.Fatal("claude-opus-4-5-20250514 pricing clobbered")
 	}
 	assertClose(t, "claude-opus input", p.InputPerMTok, 15.0)
+
+	// Verify context limits were returned
+	if result.ContextLimits["gpt-5-nano"] != 128000 {
+		t.Errorf("gpt-5-nano context limit = %d, want 128000", result.ContextLimits["gpt-5-nano"])
+	}
+	if result.ContextLimits["gpt-5-mini"] != 1000000 {
+		t.Errorf("gpt-5-mini context limit = %d, want 1000000", result.ContextLimits["gpt-5-mini"])
+	}
+	if result.MaxOutputTokens["gpt-5-nano"] != 16384 {
+		t.Errorf("gpt-5-nano max output = %d, want 16384", result.MaxOutputTokens["gpt-5-nano"])
+	}
+	if result.MaxOutputTokens["gpt-5-mini"] != 32768 {
+		t.Errorf("gpt-5-mini max output = %d, want 32768", result.MaxOutputTokens["gpt-5-mini"])
+	}
 }
 
 func TestFetchPricingCalculateCost(t *testing.T) {
@@ -158,7 +177,7 @@ func TestFetchPricingCalculateCost(t *testing.T) {
 	origPricing := snapshotPricing()
 	defer restorePricing(origPricing)
 
-	FetchPricing(context.Background(), srv.URL, "")
+	_, _ = FetchPricing(context.Background(), srv.URL, "")
 
 	// gpt-5-nano: 1000 input * 0.11/1M + 500 output * 0.44/1M = 0.00011 + 0.00022 = 0.00033
 	cost := CalculateCost("gpt-5-nano", types.BetaUsage{InputTokens: 1000, OutputTokens: 500})
@@ -171,7 +190,7 @@ func TestFetchPricingAuthError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := FetchPricing(context.Background(), srv.URL+"/v1", "bad-key")
+	_, err := FetchPricing(context.Background(), srv.URL+"/v1", "bad-key")
 	if err == nil {
 		t.Fatal("expected error for 401 response")
 	}
@@ -183,7 +202,7 @@ func TestFetchPricingServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := FetchPricing(context.Background(), srv.URL, "")
+	_, err := FetchPricing(context.Background(), srv.URL, "")
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
@@ -193,7 +212,7 @@ func TestFetchPricingTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	err := FetchPricing(ctx, "http://localhost:1/v1", "")
+	_, err := FetchPricing(ctx, "http://localhost:1/v1", "")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -205,7 +224,7 @@ func TestFetchPricingInvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := FetchPricing(context.Background(), srv.URL, "")
+	_, err := FetchPricing(context.Background(), srv.URL, "")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -218,7 +237,7 @@ func TestFetchPricingEmptyData(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := FetchPricing(context.Background(), srv.URL, "")
+	_, err := FetchPricing(context.Background(), srv.URL, "")
 	if err == nil {
 		t.Fatal("expected error for empty data")
 	}

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/jg-phare/goat/pkg/types"
@@ -38,11 +39,24 @@ func SetPricing(model string, p ModelPricing) {
 	DefaultPricing[model] = p
 }
 
+// normalizeModelID strips provider prefixes (e.g. "anthropic/", "openai/") from model IDs.
+func normalizeModelID(model string) string {
+	if idx := strings.Index(model, "/"); idx >= 0 {
+		return model[idx+1:]
+	}
+	return model
+}
+
 // CalculateCost computes the USD cost for a single API response.
 func CalculateCost(model string, usage types.BetaUsage) float64 {
-	pricing, ok := GetPricing(model)
+	normalizedModel := normalizeModelID(model)
+	pricing, ok := GetPricing(normalizedModel)
 	if !ok {
-		return 0
+		// Try original (for dynamic pricing with prefixed keys)
+		pricing, ok = GetPricing(model)
+		if !ok {
+			return 0
+		}
 	}
 	cost := float64(usage.InputTokens) * pricing.InputPerMTok / 1_000_000
 	cost += float64(usage.OutputTokens) * pricing.OutputPerMTok / 1_000_000
@@ -78,14 +92,15 @@ func NewCostTracker() *CostTracker {
 // Add records usage from a single API response and returns cumulative cost.
 func (ct *CostTracker) Add(model string, usage types.BetaUsage) float64 {
 	cost := CalculateCost(model, usage)
+	normalizedModel := normalizeModelID(model)
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	ct.totalCost += cost
 
-	accum, ok := ct.modelUsage[model]
+	accum, ok := ct.modelUsage[normalizedModel]
 	if !ok {
 		accum = &ModelUsageAccum{}
-		ct.modelUsage[model] = accum
+		ct.modelUsage[normalizedModel] = accum
 	}
 	accum.InputTokens += usage.InputTokens
 	accum.OutputTokens += usage.OutputTokens
@@ -101,6 +116,23 @@ func (ct *CostTracker) TotalCost() float64 {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	return ct.totalCost
+}
+
+// KnownModels returns all models in DefaultPricing.
+func KnownModels() []string {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+	models := make([]string, 0, len(DefaultPricing))
+	for k := range DefaultPricing {
+		models = append(models, k)
+	}
+	return models
+}
+
+// IsKnownModel returns true if the model has pricing data.
+func IsKnownModel(model string) bool {
+	_, ok := GetPricing(model)
+	return ok
 }
 
 // ModelBreakdown returns a copy of per-model usage accumulation.

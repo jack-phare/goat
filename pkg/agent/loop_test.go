@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -37,6 +38,38 @@ func (m *mockLLMClient) Complete(ctx context.Context, req *llm.CompletionRequest
 
 	return m.responses[idx].toStream(ctx), nil
 }
+
+// mockErrorThenSuccessClient returns an error on the first call, then a success response.
+type mockErrorThenSuccessClient struct {
+	mu         sync.Mutex
+	callIndex  int
+	firstError error
+	responses  []*mockStream
+	model      string
+}
+
+func (m *mockErrorThenSuccessClient) Complete(ctx context.Context, req *llm.CompletionRequest) (*llm.Stream, error) {
+	m.mu.Lock()
+	idx := m.callIndex
+	m.callIndex++
+	m.mu.Unlock()
+
+	if idx == 0 && m.firstError != nil {
+		return nil, m.firstError
+	}
+
+	respIdx := idx
+	if m.firstError != nil {
+		respIdx = idx - 1 // account for error call
+	}
+	if respIdx < 0 || respIdx >= len(m.responses) {
+		return makeMockStream(endTurnResponse("No more responses")), nil
+	}
+	return m.responses[respIdx].toStream(ctx), nil
+}
+
+func (m *mockErrorThenSuccessClient) Model() string    { return m.model }
+func (m *mockErrorThenSuccessClient) SetModel(s string) { m.model = s }
 
 func (m *mockLLMClient) Model() string {
 	return m.model
@@ -2574,6 +2607,60 @@ func TestLoop_MultiTurn_CloseIdempotent(t *testing.T) {
 	q.Wait()
 }
 
+func TestLoop_PruneOldToolResultsIntegrated(t *testing.T) {
+	// Create a tool that returns large output (>1000 chars)
+	longOutput := strings.Repeat("x", 2000)
+	mockTool := &mockRecordingTool{
+		name:   "Bash",
+		output: tools.ToolOutput{Content: longOutput},
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	// Build a long chain: 8 tool calls + 1 end_turn
+	// Each tool call = 1 turn, so we need 8 tool_use responses + 1 end_turn
+	responses := make([]*mockStream, 9)
+	for i := 0; i < 8; i++ {
+		responses[i] = toolUseResponse(
+			fmt.Sprintf("call_%d", i+1),
+			"Bash",
+			map[string]any{"command": "echo test"},
+		)
+	}
+	responses[8] = endTurnResponse("All done")
+
+	client := &mockLLMClient{responses: responses}
+	config := defaultConfig(client, registry)
+
+	q := RunLoop(context.Background(), "Do many tool calls", config)
+	collectMessages(q)
+	q.Wait()
+
+	// Check that old tool results in state.Messages were pruned
+	state := q.State()
+	toolMsgCount := 0
+	truncatedCount := 0
+	for _, msg := range state.Messages {
+		if msg.Role == "tool" {
+			toolMsgCount++
+			content, _ := msg.Content.(string)
+			if strings.Contains(content, "[output truncated]") {
+				truncatedCount++
+			}
+		}
+	}
+
+	if toolMsgCount < 8 {
+		t.Errorf("expected at least 8 tool messages, got %d", toolMsgCount)
+	}
+
+	// Older tool results should be pruned (those beyond the 10 most recent messages)
+	if truncatedCount == 0 {
+		t.Error("expected some tool results to be pruned, but none were truncated")
+	}
+}
+
 func TestLoop_MultiTurn_ThreeMessages(t *testing.T) {
 	// 3-turn multi-turn conversation
 	client := &mockLLMClient{
@@ -2648,5 +2735,223 @@ func TestLoop_MultiTurn_ThreeMessages(t *testing.T) {
 	// 3 turn results + 1 final result = 4
 	if resultCount < 3 {
 		t.Errorf("result messages = %d, want >= 3", resultCount)
+	}
+}
+
+func TestLoop_FallbackModelOnError(t *testing.T) {
+	client := &mockErrorThenSuccessClient{
+		firstError: fmt.Errorf("429 rate_limit exceeded"),
+		responses:  []*mockStream{endTurnResponse("Fallback worked!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.FallbackModel = "gpt-5-nano"
+
+	q := RunLoop(context.Background(), "Hello", config)
+	msgs := collectMessages(q)
+	q.Wait()
+
+	// Should succeed via fallback
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn (fallback should succeed)", q.GetExitReason())
+	}
+	_ = msgs
+}
+
+func TestLoop_FallbackModelOnlyOnce(t *testing.T) {
+	// Both primary and fallback fail — should not retry infinitely
+	client := &mockLLMClient{}
+	// Override Complete to always fail
+	failClient := &alwaysFailClient{err: fmt.Errorf("429 rate_limit")}
+	registry := tools.NewRegistry()
+	config := defaultConfig(failClient, registry)
+	config.FallbackModel = "gpt-5-nano"
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	_ = client // avoid unused
+	if q.GetExitReason() != ExitReason("error") {
+		t.Errorf("exit reason = %s, want error (both models should fail)", q.GetExitReason())
+	}
+}
+
+type alwaysFailClient struct {
+	err error
+}
+
+func (c *alwaysFailClient) Complete(ctx context.Context, req *llm.CompletionRequest) (*llm.Stream, error) {
+	return nil, c.err
+}
+func (c *alwaysFailClient) Model() string    { return "" }
+func (c *alwaysFailClient) SetModel(s string) {}
+
+func TestLoop_ContextLimitFunc(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Hello!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.ContextLimitFunc = func(model string, betas []string) int {
+		return 128000
+	}
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn (context limit func)", q.GetExitReason())
+	}
+}
+
+func TestLoop_BudgetDowngrade(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStream{
+			toolUseResponse("call_1", "TestTool", map[string]any{"input": "x"}),
+			endTurnResponse("Done with downgraded model"),
+		},
+	}
+	mockTool := &mockRecordingTool{
+		name:   "TestTool",
+		output: tools.ToolOutput{Content: "ok"},
+	}
+	registry := tools.NewRegistry()
+	registry.Register(mockTool)
+
+	config := defaultConfig(client, registry)
+	config.MaxBudgetUSD = 1.0
+	config.BudgetDowngradeThreshold = 0.0001
+	config.BudgetDowngradeModel = "gpt-5-nano"
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn (budget downgrade)", q.GetExitReason())
+	}
+}
+
+func TestLoop_ModelBreakdownQuery(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Hello!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+
+	q := RunLoop(context.Background(), "Hello", config)
+	collectMessages(q)
+	q.Wait()
+
+	breakdown := q.ModelBreakdown()
+	if breakdown == nil {
+		t.Fatal("ModelBreakdown returned nil")
+	}
+	if _, ok := breakdown["claude-sonnet-4-5-20250929"]; !ok {
+		t.Error("expected model breakdown to contain claude-sonnet-4-5-20250929")
+	}
+}
+
+func TestValidateModel(t *testing.T) {
+	config := DefaultConfig()
+	warning := config.ValidateModel()
+	if warning != "" {
+		t.Errorf("ValidateModel for known model returned warning: %s", warning)
+	}
+
+	config.Model = "unknown-model-xyz"
+	warning = config.ValidateModel()
+	if warning == "" {
+		t.Error("ValidateModel for unknown model should return warning")
+	}
+
+	config.Model = ""
+	warning = config.ValidateModel()
+	if warning == "" {
+		t.Error("ValidateModel for empty model should return warning")
+	}
+}
+
+func TestLoop_DynamicModelSelection_Simple(t *testing.T) {
+	// Short prompt → simple model
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Short!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.DynamicModelConfig = &DynamicModelConfig{
+		SimpleModel:           "gpt-5-nano",
+		SimpleThresholdTokens: 1000, // "Hi" is way under 1000 tokens
+		ComplexModel:          "claude-opus-4-5-20250514",
+		ComplexThresholdTokens: 10000,
+	}
+
+	q := RunLoop(context.Background(), "Hi", config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+	// Verify the state picked the simple model
+	if q.State().Model != "gpt-5-nano" {
+		t.Errorf("state.Model = %q, want gpt-5-nano", q.State().Model)
+	}
+}
+
+func TestLoop_DynamicModelSelection_Complex(t *testing.T) {
+	// Long prompt → complex model
+	longPrompt := strings.Repeat("This is a very long prompt. ", 2000) // ~56000 chars ÷ 4 = ~14000 tokens
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Done!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.DynamicModelConfig = &DynamicModelConfig{
+		SimpleModel:            "gpt-5-nano",
+		SimpleThresholdTokens:  1000,
+		ComplexModel:           "claude-opus-4-5-20250514",
+		ComplexThresholdTokens: 10000,
+	}
+
+	q := RunLoop(context.Background(), longPrompt, config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+	if q.State().Model != "claude-opus-4-5-20250514" {
+		t.Errorf("state.Model = %q, want claude-opus-4-5-20250514", q.State().Model)
+	}
+}
+
+func TestLoop_DynamicModelSelection_Default(t *testing.T) {
+	// Medium prompt → use default model (state.Model stays empty)
+	mediumPrompt := strings.Repeat("Medium. ", 200) // ~1600 chars ÷ 4 = ~400 tokens > 250 but < 10000
+	client := &mockLLMClient{
+		responses: []*mockStream{endTurnResponse("Medium!")},
+	}
+	registry := tools.NewRegistry()
+	config := defaultConfig(client, registry)
+	config.DynamicModelConfig = &DynamicModelConfig{
+		SimpleModel:            "gpt-5-nano",
+		SimpleThresholdTokens:  100,
+		ComplexModel:           "claude-opus-4-5-20250514",
+		ComplexThresholdTokens: 10000,
+	}
+
+	q := RunLoop(context.Background(), mediumPrompt, config)
+	collectMessages(q)
+	q.Wait()
+
+	if q.GetExitReason() != ExitEndTurn {
+		t.Errorf("exit reason = %s, want end_turn", q.GetExitReason())
+	}
+	// state.Model should be empty (using default config.Model)
+	if q.State().Model != "" {
+		t.Errorf("state.Model = %q, want empty (default)", q.State().Model)
 	}
 }

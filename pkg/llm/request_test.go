@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/jg-phare/goat/pkg/types"
@@ -177,6 +178,49 @@ func TestBuildCompletionRequest(t *testing.T) {
 			t.Error("ExtraBody should be nil when no extra fields are set")
 		}
 	})
+}
+
+func TestToolResult_MetadataDoesNotAffectConversion(t *testing.T) {
+	// Metadata should not appear in converted tool messages
+	results := []ToolResult{
+		{
+			ToolUseID: "call_1",
+			Content:   "file content here",
+			Metadata: &ToolResultMetadata{
+				FilePaths:    []string{"/tmp/foo.go"},
+				WasTruncated: false,
+				OriginalLen:  17,
+			},
+		},
+		{
+			ToolUseID: "call_2",
+			Content:   "other content",
+			// nil metadata
+		},
+	}
+
+	msgs := ConvertToToolMessages(results)
+
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+
+	// Verify content and tool call IDs are preserved
+	if msgs[0].ToolCallID != "call_1" || msgs[0].Content != "file content here" {
+		t.Errorf("msg[0]: ToolCallID=%q Content=%v", msgs[0].ToolCallID, msgs[0].Content)
+	}
+	if msgs[1].ToolCallID != "call_2" || msgs[1].Content != "other content" {
+		t.Errorf("msg[1]: ToolCallID=%q Content=%v", msgs[1].ToolCallID, msgs[1].Content)
+	}
+
+	// Verify metadata is not serialized in the message
+	for _, msg := range msgs {
+		data, _ := json.Marshal(msg)
+		dataStr := string(data)
+		if strings.Contains(dataStr, "FilePaths") || strings.Contains(dataStr, "WasTruncated") || strings.Contains(dataStr, "OriginalLen") {
+			t.Errorf("metadata leaked into serialized message: %s", dataStr)
+		}
+	}
 }
 
 func TestConvertAssistantToOpenAI(t *testing.T) {

@@ -50,6 +50,33 @@ func TestGetContextLimit(t *testing.T) {
 	}
 }
 
+func TestSetContextLimit(t *testing.T) {
+	// Set a new model's context limit
+	SetContextLimit("gpt-5-nano", 128000)
+	defer func() {
+		contextMu.Lock()
+		delete(ModelContextLimits, "gpt-5-nano")
+		contextMu.Unlock()
+	}()
+
+	got := GetContextLimit("gpt-5-nano", nil)
+	if got != 128000 {
+		t.Errorf("GetContextLimit after Set = %d, want 128000", got)
+	}
+}
+
+func TestSetContextLimit_Override(t *testing.T) {
+	// Override an existing model's context limit
+	orig := GetContextLimit("claude-sonnet-4-5-20250929", nil)
+	SetContextLimit("claude-sonnet-4-5-20250929", 500_000)
+	defer SetContextLimit("claude-sonnet-4-5-20250929", orig)
+
+	got := GetContextLimit("claude-sonnet-4-5-20250929", nil)
+	if got != 500_000 {
+		t.Errorf("GetContextLimit after override = %d, want 500000", got)
+	}
+}
+
 func TestTokenBudget_UtilizationPct(t *testing.T) {
 	tests := []struct {
 		name   string

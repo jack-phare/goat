@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/jg-phare/goat/pkg/agent"
+	goatctx "github.com/jg-phare/goat/pkg/context"
 	"github.com/jg-phare/goat/pkg/llm"
 	"github.com/jg-phare/goat/pkg/tools"
 	"github.com/jg-phare/goat/pkg/types"
@@ -63,9 +64,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Fetch model pricing from proxy (non-fatal on failure).
-	if err := llm.FetchPricing(context.Background(), rc.BaseURL, rc.APIKey); err != nil {
+	// Fetch model pricing and context limits from proxy (non-fatal on failure).
+	if pricingResult, err := llm.FetchPricing(context.Background(), rc.BaseURL, rc.APIKey); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not fetch pricing: %v\n", err)
+	} else if pricingResult != nil {
+		// Merge context limits into the context package
+		for model, limit := range pricingResult.ContextLimits {
+			goatctx.SetContextLimit(model, limit)
+		}
 	}
 
 	fmt.Printf("Provider: %s\n", rc.Provider)

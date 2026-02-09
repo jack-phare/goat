@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/jg-phare/goat/pkg/llm"
 	"github.com/jg-phare/goat/pkg/types"
 )
 
@@ -27,10 +28,11 @@ type Query struct {
 	controlResp chan types.ControlResponse // response channel for control commands
 	closeCh     chan struct{}              // explicit close signal
 
-	mu     sync.Mutex
-	state  *LoopState
-	cancel context.CancelFunc
-	closed bool
+	mu          sync.Mutex
+	state       *LoopState
+	costTracker *llm.CostTracker
+	cancel      context.CancelFunc
+	closed      bool
 }
 
 // Messages returns the channel of SDKMessages emitted by the loop.
@@ -194,4 +196,15 @@ func (q *Query) SetMaxThinkingTokens(tokens int) (types.ControlResponse, error) 
 			MaxThinkingTokens: &tokens,
 		},
 	})
+}
+
+// ModelBreakdown returns per-model cost breakdown.
+// Returns nil if no CostTracker is configured.
+func (q *Query) ModelBreakdown() map[string]llm.ModelUsageAccum {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.costTracker == nil {
+		return nil
+	}
+	return q.costTracker.ModelBreakdown()
 }

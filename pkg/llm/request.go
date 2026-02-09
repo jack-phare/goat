@@ -96,6 +96,16 @@ func ConvertToToolMessages(toolResults []ToolResult) []ChatMessage {
 type ToolResult struct {
 	ToolUseID string
 	Content   string
+	// Metadata contains optional structured data about the tool execution.
+	// Not sent to the LLM, used internally for tracking.
+	Metadata *ToolResultMetadata
+}
+
+// ToolResultMetadata contains internal tracking data for a tool result.
+type ToolResultMetadata struct {
+	FilePaths    []string // file paths accessed during this tool call
+	WasTruncated bool     // whether output was truncated
+	OriginalLen  int      // original content length before truncation
 }
 
 // convertAssistantToOpenAI converts internal content blocks to an OpenAI assistant message.
