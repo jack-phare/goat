@@ -3,6 +3,7 @@ package subagent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ Project agent prompt.
 `)
 
 	loader := NewLoader(dir, "")
-	defs, err := loader.LoadAll()
+	defs, _, err := loader.LoadAll()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,7 +53,7 @@ User agent prompt.
 `)
 
 	loader := NewLoader(dir, userDir)
-	defs, err := loader.LoadAll()
+	defs, _, err := loader.LoadAll()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +86,7 @@ Project prompt.
 `)
 
 	loader := NewLoader(dir, userDir)
-	defs, err := loader.LoadAll()
+	defs, _, err := loader.LoadAll()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +102,7 @@ Project prompt.
 
 func TestLoader_LoadAll_MissingDirs(t *testing.T) {
 	loader := NewLoader("/nonexistent/path", "/also/nonexistent")
-	defs, err := loader.LoadAll()
+	defs, _, err := loader.LoadAll()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +124,7 @@ Prompt.
 	os.WriteFile(filepath.Join(agentDir, "config.yaml"), []byte("name: test"), 0o644)
 
 	loader := NewLoader(dir, "")
-	defs, err := loader.LoadAll()
+	defs, _, err := loader.LoadAll()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -132,7 +133,7 @@ Prompt.
 	}
 }
 
-func TestLoader_LoadAll_ErrorsOnInvalidFiles(t *testing.T) {
+func TestLoader_LoadAll_WarnsOnInvalidFiles(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := filepath.Join(dir, ".claude", "agents")
 	writeAgentFile(t, agentDir, "valid.md", `---
@@ -140,13 +141,101 @@ description: Valid agent
 ---
 Prompt.
 `)
-	// Invalid frontmatter — should cause an error
+	// Invalid frontmatter — should produce a warning, not a hard error
 	writeAgentFile(t, agentDir, "invalid.md", "No frontmatter here")
 
 	loader := NewLoader(dir, "")
-	_, err := loader.LoadAll()
-	if err == nil {
-		t.Fatal("expected error for invalid agent file, got nil")
+	defs, warnings, err := loader.LoadAll()
+	if err != nil {
+		t.Fatalf("unexpected hard error: %v", err)
+	}
+	if len(defs) != 1 {
+		t.Errorf("expected 1 valid def, got %d", len(defs))
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	if warnings[0].File == "" {
+		t.Error("warning should include filename")
+	}
+}
+
+func TestLoader_SkipsMalformedFiles(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, ".claude", "agents")
+
+	// 3 files, 1 bad
+	writeAgentFile(t, agentDir, "good1.md", "---\ndescription: Good 1\n---\nPrompt.")
+	writeAgentFile(t, agentDir, "bad.md", "No frontmatter here")
+	writeAgentFile(t, agentDir, "good2.md", "---\ndescription: Good 2\n---\nPrompt.")
+
+	loader := NewLoader(dir, "")
+	defs, warnings, err := loader.LoadAll()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Errorf("expected 2 defs, got %d", len(defs))
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+}
+
+func TestLoader_WarningForMalformedFile(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, ".claude", "agents")
+	writeAgentFile(t, agentDir, "broken.md", "No frontmatter")
+
+	loader := NewLoader(dir, "")
+	_, warnings, err := loader.LoadAll()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	w := warnings[0]
+	if !strings.Contains(w.File, "broken.md") {
+		t.Errorf("warning file = %q, want to contain 'broken.md'", w.File)
+	}
+	if w.Error == nil {
+		t.Error("warning error should not be nil")
+	}
+}
+
+func TestLoader_LoadAll_UnknownFieldWarnings(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, ".claude", "agents")
+	writeAgentFile(t, agentDir, "typo-agent.md", `---
+description: Agent with typo
+tols: Read
+---
+Prompt.
+`)
+
+	loader := NewLoader(dir, "")
+	defs, warnings, err := loader.LoadAll()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// File should still load successfully (typo is a warning, not an error)
+	if _, ok := defs["typo-agent"]; !ok {
+		t.Error("expected 'typo-agent' to be loaded despite unknown field warning")
+	}
+	// Should have a warning about the unknown field
+	if len(warnings) == 0 {
+		t.Fatal("expected at least 1 warning for unknown field 'tols'")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w.Error.Error(), "tols") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about 'tols', got: %v", warnings)
 	}
 }
 
@@ -160,7 +249,7 @@ Plugin prompt.
 `)
 
 	loader := NewLoader(dir, "", pluginDir)
-	defs, err := loader.LoadAll()
+	defs, _, err := loader.LoadAll()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -9,6 +9,7 @@ type AgentInfo struct {
 	Tools       []string
 	IsActive    bool
 	FilePath    string
+	Color       string
 }
 
 // ListAgentInfo returns info about all registered agent definitions.
@@ -34,6 +35,7 @@ func (m *Manager) ListAgentInfo() []AgentInfo {
 			Tools:       def.Tools,
 			IsActive:    activeTypes[name],
 			FilePath:    def.FilePath,
+			Color:       def.Color,
 		})
 	}
 	return result

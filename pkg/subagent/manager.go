@@ -19,6 +19,7 @@ import (
 )
 
 const maxConcurrentAgents = 10
+const maxCompletedAgents = 100
 
 // ManagerOpts configures a Manager.
 type ManagerOpts struct {
@@ -38,12 +39,14 @@ type ManagerOpts struct {
 // Manager creates, tracks, and controls subagent instances.
 // It implements tools.SubagentSpawner.
 type Manager struct {
-	mu        sync.RWMutex
-	agents    map[string]Definition    // all registered agent definitions
-	active    map[string]*RunningAgent // running agent instances by ID
-	builtIn   map[string]Definition
-	cliAgents map[string]Definition
-	opts      ManagerOpts
+	mu            sync.RWMutex
+	agents        map[string]Definition    // all registered agent definitions
+	active        map[string]*RunningAgent // running agent instances by ID
+	completed     map[string]*RunningAgent // recently completed agents (bounded to maxCompletedAgents)
+	completedOrder []string                // insertion order for oldest eviction
+	builtIn       map[string]Definition
+	cliAgents     map[string]Definition
+	opts          ManagerOpts
 }
 
 // NewManager creates a Manager with built-in agents and optional CLI/file-based agents.
@@ -52,6 +55,7 @@ func NewManager(opts ManagerOpts, cliAgents map[string]Definition) *Manager {
 	m := &Manager{
 		agents:    make(map[string]Definition),
 		active:    make(map[string]*RunningAgent),
+		completed: make(map[string]*RunningAgent),
 		builtIn:   builtIn,
 		cliAgents: cliAgents,
 		opts:      opts,
@@ -94,11 +98,16 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 		agentID = *input.Resume
 		// Check if we're resuming an existing agent
 		m.mu.RLock()
-		existing, exists := m.active[agentID]
+		existing, existsActive := m.active[agentID]
+		completed, existsCompleted := m.completed[agentID]
 		m.mu.RUnlock()
-		if exists {
-			return m.resumeAgent(ctx, existing, input)
+		if existsActive {
+			return m.resumeRunningAgent(ctx, existing, input)
 		}
+		if existsCompleted {
+			return m.resumeCompletedAgent(ctx, completed, input, def)
+		}
+		return tools.AgentResult{}, fmt.Errorf("cannot resume unknown agent %q", agentID)
 	}
 
 	// 4. Fire SubagentStart hook
@@ -122,6 +131,17 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 	// Remove Agent tool from subagent registries (no nesting)
 	toolNames = filterFunc(toolNames, func(s string) bool { return s != "Agent" })
 	taskRestriction, toolNames := parseTaskRestriction(toolNames)
+
+	// Validate tool names against parent registry
+	var spawnWarnings []string
+	if m.opts.ParentRegistry != nil && len(def.Tools) > 0 {
+		parentSet := toSet(parentToolNames)
+		for _, t := range def.Tools {
+			if !parentSet[t] && t != "Agent" && !isTaskEntry(t) {
+				spawnWarnings = append(spawnWarnings, fmt.Sprintf("tool %q in definition not found in parent registry", t))
+			}
+		}
+	}
 
 	// 7. Resolve permission mode
 	permMode := m.resolvePermissionMode(def, input)
@@ -195,6 +215,7 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 		Output:         &AgentOutput{},
 		TranscriptPath: transcriptPath,
 		Done:           make(chan struct{}),
+		Warnings:       spawnWarnings,
 		cleanupFn: func() {
 			if m.opts.HookRunner != nil {
 				m.opts.HookRunner.UnregisterScoped(agentID)
@@ -221,12 +242,14 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 	}
 
 	// Foreground: block until complete
-	output := m.drainQuery(query)
-	m.finishAgent(ra, query, output)
+	dr := m.drainQuery(query)
+	m.finishAgent(ra, query, dr)
 
 	return tools.AgentResult{
 		AgentID: agentID,
-		Output:  output,
+		Output:  dr.output,
+		Error:   dr.errorMsg,
+		Metrics: taskMetricsToAgentMetrics(ra.Metrics),
 	}, nil
 }
 
@@ -234,6 +257,9 @@ func (m *Manager) Spawn(ctx context.Context, input tools.AgentInput) (tools.Agen
 func (m *Manager) GetOutput(taskID string, block bool, timeout time.Duration) (*TaskResult, error) {
 	m.mu.RLock()
 	ra, ok := m.active[taskID]
+	if !ok {
+		ra, ok = m.completed[taskID]
+	}
 	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q", taskID)
@@ -274,10 +300,16 @@ func (m *Manager) GetOutput(taskID string, block bool, timeout time.Duration) (*
 func (m *Manager) Stop(taskID string) error {
 	m.mu.RLock()
 	ra, ok := m.active[taskID]
-	m.mu.RUnlock()
 	if !ok {
+		// Check completed — already done, return nil
+		_, inCompleted := m.completed[taskID]
+		m.mu.RUnlock()
+		if inCompleted {
+			return nil
+		}
 		return fmt.Errorf("unknown agent %q", taskID)
 	}
+	m.mu.RUnlock()
 
 	if ra.GetState() != StateRunning {
 		return nil // already done
@@ -290,13 +322,22 @@ func (m *Manager) Stop(taskID string) error {
 	return nil
 }
 
-// List returns the status of all known agents.
+// List returns the status of all known agents (active and recently completed).
 func (m *Manager) List() []AgentStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	result := make([]AgentStatus, 0, len(m.active))
+	result := make([]AgentStatus, 0, len(m.active)+len(m.completed))
 	for _, ra := range m.active {
+		result = append(result, AgentStatus{
+			ID:        ra.ID,
+			Type:      ra.Type,
+			Name:      ra.Name,
+			State:     ra.GetState(),
+			StartedAt: ra.StartedAt,
+		})
+	}
+	for _, ra := range m.completed {
 		result = append(result, AgentStatus{
 			ID:        ra.ID,
 			Type:      ra.Type,
@@ -327,17 +368,18 @@ func (m *Manager) RegisterAgents(defs map[string]Definition) {
 }
 
 // Reload re-scans the filesystem and re-resolves all agent definitions.
-func (m *Manager) Reload(cwd string) error {
+// Returns any warnings encountered during loading (malformed files, etc.).
+func (m *Manager) Reload(cwd string) ([]LoadWarning, error) {
 	loader := NewLoader(cwd, "", /* no plugin dirs for now */)
-	fileBased, err := loader.LoadAll()
+	fileBased, warnings, err := loader.LoadAll()
 	if err != nil {
-		return err
+		return warnings, err
 	}
 
 	m.mu.Lock()
 	m.agents = Resolve(m.builtIn, m.cliAgents, fileBased)
 	m.mu.Unlock()
-	return nil
+	return warnings, nil
 }
 
 // Definitions returns a copy of all registered agent definitions.
@@ -353,15 +395,26 @@ func (m *Manager) Definitions() map[string]Definition {
 
 // --- Internal helpers ---
 
-func (m *Manager) drainAndFinish(query *agent.Query, ra *RunningAgent) {
-	output := m.drainQuery(query)
-	// Write output file before finishAgent closes Done channel
-	writeOutputFile(ra.OutputFile, output)
-	m.finishAgent(ra, query, output)
+// drainResult holds the text output and any error captured from the subagent stream.
+type drainResult struct {
+	output   string
+	errorMsg string
 }
 
-func (m *Manager) drainQuery(query *agent.Query) string {
+func (m *Manager) drainAndFinish(query *agent.Query, ra *RunningAgent) {
+	dr := m.drainQuery(query)
+	// Write output file before finishAgent closes Done channel
+	content := dr.output
+	if dr.errorMsg != "" {
+		content += "\n\nError: " + dr.errorMsg
+	}
+	writeOutputFile(ra.OutputFile, content)
+	m.finishAgent(ra, query, dr)
+}
+
+func (m *Manager) drainQuery(query *agent.Query) drainResult {
 	var textParts []string
+	var errorMsg string
 	for msg := range query.Messages() {
 		// Extract text content from assistant messages (value or pointer)
 		switch am := msg.(type) {
@@ -377,12 +430,23 @@ func (m *Manager) drainQuery(query *agent.Query) string {
 					textParts = append(textParts, block.Text)
 				}
 			}
+		case types.ResultMessage:
+			if am.IsError && len(am.Errors) > 0 {
+				errorMsg = strings.Join(am.Errors, "; ")
+			}
+		case *types.ResultMessage:
+			if am.IsError && len(am.Errors) > 0 {
+				errorMsg = strings.Join(am.Errors, "; ")
+			}
 		}
 	}
-	return strings.Join(textParts, "")
+	return drainResult{
+		output:   strings.Join(textParts, ""),
+		errorMsg: errorMsg,
+	}
 }
 
-func (m *Manager) finishAgent(ra *RunningAgent, query *agent.Query, output string) {
+func (m *Manager) finishAgent(ra *RunningAgent, query *agent.Query, dr drainResult) {
 	query.Wait()
 
 	state := query.State()
@@ -395,23 +459,50 @@ func (m *Manager) finishAgent(ra *RunningAgent, query *agent.Query, output strin
 		TokensUsed: state.TotalUsage,
 	}
 
+	// Determine final state
 	finalState := StateCompleted
-	if exitReason := query.GetExitReason(); exitReason == agent.ExitInterrupted || exitReason == agent.ExitAborted {
+	exitReason := query.GetExitReason()
+	switch {
+	case exitReason == agent.ExitInterrupted || exitReason == agent.ExitAborted:
 		finalState = StateStopped
+	case exitReason == agent.ExitReason("error") || exitReason == agent.ExitMaxBudget:
+		finalState = StateFailed
+	case state.LastError != nil:
+		finalState = StateFailed
+	}
+
+	// Collect error message from query state or drain result
+	errorMsg := dr.errorMsg
+	if state.LastError != nil && errorMsg == "" {
+		errorMsg = state.LastError.Error()
 	}
 
 	ra.SetMetrics(metrics)
 	ra.SetState(finalState)
-	ra.Output.Append(output)
+	ra.Output.Append(dr.output)
 	ra.Output.SetResult(&TaskResult{
-		Content: output,
+		Content: dr.output,
 		Metrics: metrics,
 		State:   finalState,
 		AgentID: ra.ID,
+		Error:   errorMsg,
 	})
 
 	// Signal completion
 	close(ra.Done)
+
+	// Move from active to completed
+	m.mu.Lock()
+	delete(m.active, ra.ID)
+	m.completed[ra.ID] = ra
+	m.completedOrder = append(m.completedOrder, ra.ID)
+	// Evict oldest if over limit
+	for len(m.completedOrder) > maxCompletedAgents {
+		oldest := m.completedOrder[0]
+		m.completedOrder = m.completedOrder[1:]
+		delete(m.completed, oldest)
+	}
+	m.mu.Unlock()
 
 	// Cleanup scoped hooks
 	ra.Cleanup()
@@ -430,13 +521,133 @@ func (m *Manager) finishAgent(ra *RunningAgent, query *agent.Query, output strin
 	}
 }
 
-func (m *Manager) resumeAgent(_ context.Context, ra *RunningAgent, _ tools.AgentInput) (tools.AgentResult, error) {
-	// For now, return current output
+// resumeRunningAgent returns current output from an agent that's still running.
+func (m *Manager) resumeRunningAgent(_ context.Context, ra *RunningAgent, _ tools.AgentInput) (tools.AgentResult, error) {
 	result := ra.Output.GetResult()
 	if result != nil {
 		return tools.AgentResult{AgentID: ra.ID, Output: result.Content}, nil
 	}
 	return tools.AgentResult{AgentID: ra.ID, Output: ra.Output.String()}, nil
+}
+
+// resumeCompletedAgent re-launches a completed/stopped/failed agent with the new prompt,
+// prepending the previous output as conversation context.
+func (m *Manager) resumeCompletedAgent(ctx context.Context, ra *RunningAgent, input tools.AgentInput, def Definition) (tools.AgentResult, error) {
+	// Build the previous context message
+	previousOutput := ra.Output.String()
+	contextPrompt := input.Prompt
+	if previousOutput != "" {
+		contextPrompt = "Previous agent output:\n\n" + previousOutput + "\n\n---\n\nNew request: " + input.Prompt
+	}
+
+	// Remove from completed map since we're re-spawning
+	m.mu.Lock()
+	delete(m.completed, ra.ID)
+	// Remove from completedOrder
+	for i, id := range m.completedOrder {
+		if id == ra.ID {
+			m.completedOrder = append(m.completedOrder[:i], m.completedOrder[i+1:]...)
+			break
+		}
+	}
+	m.mu.Unlock()
+
+	// Re-spawn with the same ID
+	resumeInput := tools.AgentInput{
+		Description:     input.Description,
+		Prompt:          contextPrompt,
+		SubagentType:    input.SubagentType,
+		Model:           input.Model,
+		RunInBackground: input.RunInBackground,
+		MaxTurns:        input.MaxTurns,
+		Name:            input.Name,
+		Mode:            input.Mode,
+		// Don't set Resume — we're handling it here
+	}
+
+	// Resolve model from the original definition
+	model := resolveModel(def.Model, input.Model, m.parentModel())
+
+	// Build system prompt
+	systemPrompt := m.buildSystemPrompt(def, input, "")
+
+	maxTurns := 50
+	if input.MaxTurns != nil {
+		maxTurns = *input.MaxTurns
+	} else if def.MaxTurns != nil {
+		maxTurns = *def.MaxTurns
+	}
+
+	isBackground := input.RunInBackground != nil && *input.RunInBackground
+	permMode := m.resolvePermissionMode(def, resumeInput)
+
+	config := agent.AgentConfig{
+		Model:             model,
+		MaxTurns:          maxTurns,
+		CWD:               m.parentCWD(),
+		SessionID:         ra.ID,
+		PermissionMode:    permMode,
+		AgentType:         ra.Type,
+		BackgroundMode:    isBackground,
+		CanSpawnSubagents: false,
+		LLMClient:         m.opts.LLMClient,
+		Prompter:          &agent.StaticPromptAssembler{Prompt: systemPrompt},
+		Permissions:       m.resolvePermissions(isBackground),
+		Hooks:             m.resolveHooks(),
+		Compactor:         &agent.NoOpCompactor{},
+		CostTracker:       m.opts.CostTracker,
+		SessionStore:      m.resolveSessionStore(),
+	}
+
+	// Build scoped tool registry
+	parentToolNames := m.parentToolNames()
+	toolNames := resolveTools(def.Tools, def.DisallowedTools, parentToolNames)
+	toolNames = filterFunc(toolNames, func(s string) bool { return s != "Agent" })
+	_, toolNames = parseTaskRestriction(toolNames)
+	config.ToolRegistry = m.buildScopedRegistry(toolNames, nil)
+
+	// Create new RunningAgent with the same ID
+	newRA := &RunningAgent{
+		ID:         ra.ID,
+		Type:       ra.Type,
+		Name:       ra.Name,
+		Definition: def,
+		State:      StateRunning,
+		StartedAt:  time.Now(),
+		Output:     &AgentOutput{},
+		Done:       make(chan struct{}),
+		cleanupFn: func() {
+			if m.opts.HookRunner != nil {
+				m.opts.HookRunner.UnregisterScoped(ra.ID)
+			}
+		},
+	}
+
+	m.mu.Lock()
+	m.active[ra.ID] = newRA
+	m.mu.Unlock()
+
+	// Launch the agentic loop with the context-enriched prompt
+	query := agent.RunLoop(ctx, contextPrompt, config)
+	newRA.Cancel = func() { query.Interrupt() }
+
+	if isBackground {
+		outputFilePath := m.createOutputFile(ra.ID)
+		newRA.OutputFile = outputFilePath
+		go m.drainAndFinish(query, newRA)
+		return tools.AgentResult{AgentID: ra.ID, OutputFile: outputFilePath}, nil
+	}
+
+	// Foreground: block until complete
+	dr := m.drainQuery(query)
+	m.finishAgent(newRA, query, dr)
+
+	return tools.AgentResult{
+		AgentID: ra.ID,
+		Output:  dr.output,
+		Error:   dr.errorMsg,
+		Metrics: taskMetricsToAgentMetrics(newRA.Metrics),
+	}, nil
 }
 
 func (m *Manager) parentSessionID() string {
@@ -623,6 +834,17 @@ func convertHooks(hookMap map[types.HookEvent][]types.HookCallbackMatcher) map[t
 		result[event] = converted
 	}
 	return result
+}
+
+// taskMetricsToAgentMetrics converts internal TaskMetrics to the tools.AgentMetrics type.
+func taskMetricsToAgentMetrics(m TaskMetrics) *tools.AgentMetrics {
+	return &tools.AgentMetrics{
+		DurationSecs: m.Duration.Seconds(),
+		TurnCount:    m.TurnCount,
+		CostUSD:      m.CostUSD,
+		InputTokens:  m.TokensUsed.InputTokens,
+		OutputTokens: m.TokensUsed.OutputTokens,
+	}
 }
 
 // Verify Manager implements tools.SubagentSpawner at compile time.

@@ -1,6 +1,10 @@
 package subagent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jg-phare/goat/pkg/types"
+)
 
 func TestListAgentInfo_BuiltIns(t *testing.T) {
 	mgr := newTestManager(&mockLLMClient{})
@@ -74,5 +78,36 @@ func TestListAgentInfo_Source(t *testing.T) {
 		if info.Source != SourceBuiltIn {
 			t.Errorf("agent %q source = %v, want SourceBuiltIn", info.Name, info.Source)
 		}
+	}
+}
+
+func TestListAgentInfo_IncludesColor(t *testing.T) {
+	mgr := newTestManager(&mockLLMClient{})
+
+	// Register an agent with a color
+	mgr.RegisterAgents(map[string]Definition{
+		"colored-agent": {
+			AgentDefinition: types.AgentDefinition{
+				Name:        "colored-agent",
+				Description: "An agent with a color",
+				Color:       "#FF5733",
+			},
+			Source:   SourceProject,
+			Priority: 30,
+		},
+	})
+
+	infos := mgr.ListAgentInfo()
+	found := false
+	for _, info := range infos {
+		if info.Name == "colored-agent" {
+			found = true
+			if info.Color != "#FF5733" {
+				t.Errorf("Color = %q, want '#FF5733'", info.Color)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected 'colored-agent' in infos")
 	}
 }

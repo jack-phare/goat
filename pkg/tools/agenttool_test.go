@@ -159,6 +159,120 @@ func TestAgent_NameAndModeFields(t *testing.T) {
 	}
 }
 
+func TestAgent_ErrorInResult(t *testing.T) {
+	spawner := &mockSpawner{
+		result: AgentResult{
+			AgentID: "agent-err",
+			Output:  "partial output",
+			Error:   "subagent LLM call failed",
+		},
+	}
+	tool := &AgentTool{Spawner: spawner}
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"description":   "test",
+		"prompt":        "test",
+		"subagent_type": "general",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.IsError {
+		t.Error("expected IsError=true when AgentResult.Error is set")
+	}
+	if !strings.Contains(out.Content, "subagent LLM call failed") {
+		t.Errorf("expected error in content, got %q", out.Content)
+	}
+	if !strings.Contains(out.Content, "partial output") {
+		t.Errorf("expected partial output in content, got %q", out.Content)
+	}
+}
+
+// --- Phase 7 Tests: Metrics in Output ---
+
+func TestAgent_MetricsInOutput(t *testing.T) {
+	spawner := &mockSpawner{
+		result: AgentResult{
+			AgentID: "agent-m",
+			Output:  "analysis complete",
+			Metrics: &AgentMetrics{
+				DurationSecs: 12.3,
+				TurnCount:    5,
+				CostUSD:      0.0234,
+				InputTokens:  4521,
+				OutputTokens: 1234,
+			},
+		},
+	}
+	tool := &AgentTool{Spawner: spawner}
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"description":   "test",
+		"prompt":        "test",
+		"subagent_type": "general",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.IsError {
+		t.Fatalf("unexpected error: %s", out.Content)
+	}
+	if !strings.Contains(out.Content, "Duration: 12.3s") {
+		t.Errorf("expected duration in output, got %q", out.Content)
+	}
+	if !strings.Contains(out.Content, "Turns: 5") {
+		t.Errorf("expected turns in output, got %q", out.Content)
+	}
+	if !strings.Contains(out.Content, "Cost: $0.0234") {
+		t.Errorf("expected cost in output, got %q", out.Content)
+	}
+	if !strings.Contains(out.Content, "4521 in") {
+		t.Errorf("expected input tokens in output, got %q", out.Content)
+	}
+	if !strings.Contains(out.Content, "1234 out") {
+		t.Errorf("expected output tokens in output, got %q", out.Content)
+	}
+}
+
+func TestAgent_BackgroundNoMetrics(t *testing.T) {
+	spawner := &mockSpawner{
+		result: AgentResult{AgentID: "bg-agent", Output: "", OutputFile: "/tmp/bg.output"},
+	}
+	tool := &AgentTool{Spawner: spawner}
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"description":       "test",
+		"prompt":            "test",
+		"subagent_type":     "general",
+		"run_in_background": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.Content, "Duration:") {
+		t.Errorf("background output should not contain metrics, got %q", out.Content)
+	}
+}
+
+func TestAgent_MetricsNilDoesNotCrash(t *testing.T) {
+	spawner := &mockSpawner{
+		result: AgentResult{AgentID: "agent-nm", Output: "ok", Metrics: nil},
+	}
+	tool := &AgentTool{Spawner: spawner}
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"description":   "test",
+		"prompt":        "test",
+		"subagent_type": "general",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.Content, "Duration:") {
+		t.Errorf("nil metrics should not add duration line, got %q", out.Content)
+	}
+}
+
 func TestAgent_InputSchema_HasNameAndMode(t *testing.T) {
 	tool := &AgentTool{}
 	schema := tool.InputSchema()

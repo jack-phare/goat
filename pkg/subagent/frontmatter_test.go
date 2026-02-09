@@ -1,8 +1,10 @@
 package subagent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jg-phare/goat/pkg/types"
@@ -283,6 +285,278 @@ func TestFromTypesDefinition(t *testing.T) {
 	def2 := FromTypesDefinition("override", ad, SourceCLIFlag, 1)
 	if def2.Name != "original" {
 		t.Errorf("Name = %q, want 'original' (should preserve existing)", def2.Name)
+	}
+}
+
+// --- Phase 2 Tests: Frontmatter Validation ---
+
+func TestFrontmatter_InvalidPermissionMode(t *testing.T) {
+	content := []byte(`---
+description: Test
+permissionMode: foo
+---
+Body.
+`)
+	_, err := ParseContent(content, "test.md")
+	if err == nil {
+		t.Fatal("expected error for invalid permissionMode")
+	}
+	if !strings.Contains(err.Error(), "invalid permissionMode") {
+		t.Errorf("error = %q, want 'invalid permissionMode'", err.Error())
+	}
+}
+
+func TestFrontmatter_ValidPermissionModes(t *testing.T) {
+	modes := []string{"", "default", "acceptEdits", "bypassPermissions", "plan", "delegate", "dontAsk"}
+	for _, mode := range modes {
+		var yaml string
+		if mode == "" {
+			yaml = "description: Test"
+		} else {
+			yaml = fmt.Sprintf("description: Test\npermissionMode: %s", mode)
+		}
+		content := []byte("---\n" + yaml + "\n---\nBody.")
+		_, err := ParseContent(content, "test.md")
+		if err != nil {
+			t.Errorf("mode %q: unexpected error: %v", mode, err)
+		}
+	}
+}
+
+func TestFrontmatter_MaxTurnsZero(t *testing.T) {
+	content := []byte(`---
+description: Test
+maxTurns: 0
+---
+Body.
+`)
+	_, err := ParseContent(content, "test.md")
+	if err == nil {
+		t.Fatal("expected error for maxTurns: 0")
+	}
+	if !strings.Contains(err.Error(), "maxTurns must be positive") {
+		t.Errorf("error = %q, want 'maxTurns must be positive'", err.Error())
+	}
+}
+
+func TestFrontmatter_MaxTurnsNegative(t *testing.T) {
+	content := []byte(`---
+description: Test
+maxTurns: -1
+---
+Body.
+`)
+	_, err := ParseContent(content, "test.md")
+	if err == nil {
+		t.Fatal("expected error for maxTurns: -1")
+	}
+	if !strings.Contains(err.Error(), "maxTurns must be positive") {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestFrontmatter_ValidMaxTurns(t *testing.T) {
+	content := []byte(`---
+description: Test
+maxTurns: 5
+---
+Body.
+`)
+	def, err := ParseContent(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if def.MaxTurns == nil || *def.MaxTurns != 5 {
+		t.Error("expected maxTurns = 5")
+	}
+}
+
+func TestFrontmatter_ModelValidation(t *testing.T) {
+	// Valid: known aliases
+	for _, model := range []string{"haiku", "sonnet", "opus"} {
+		content := []byte(fmt.Sprintf("---\ndescription: Test\nmodel: %s\n---\nBody.", model))
+		_, err := ParseContent(content, "test.md")
+		if err != nil {
+			t.Errorf("model %q: unexpected error: %v", model, err)
+		}
+	}
+
+	// Valid: full model IDs (contain - or /)
+	for _, model := range []string{"claude-sonnet-4-5-20250929", "anthropic/claude-3"} {
+		content := []byte(fmt.Sprintf("---\ndescription: Test\nmodel: %s\n---\nBody.", model))
+		_, err := ParseContent(content, "test.md")
+		if err != nil {
+			t.Errorf("model %q: unexpected error: %v", model, err)
+		}
+	}
+
+	// Invalid: garbage string with no dash or slash
+	content := []byte("---\ndescription: Test\nmodel: foobar\n---\nBody.")
+	_, err := ParseContent(content, "test.md")
+	if err == nil {
+		t.Fatal("expected error for model: foobar")
+	}
+	if !strings.Contains(err.Error(), "invalid model") {
+		t.Errorf("error = %q, want 'invalid model'", err.Error())
+	}
+}
+
+// --- Phase 6 Tests: Unknown YAML Field Warnings ---
+
+func TestFrontmatter_UnknownField_TypoSuggestion(t *testing.T) {
+	content := []byte(`---
+description: Test
+tols: Read
+---
+Body.
+`)
+	_, warnings, err := ParseContentWithWarnings(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings count = %d, want 1; warnings = %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], `unknown field "tols"`) {
+		t.Errorf("warning = %q, want 'unknown field \"tols\"'", warnings[0])
+	}
+	if !strings.Contains(warnings[0], `did you mean "tools"`) {
+		t.Errorf("warning = %q, want 'did you mean \"tools\"'", warnings[0])
+	}
+}
+
+func TestFrontmatter_UnknownField_Multiple(t *testing.T) {
+	content := []byte(`---
+description: Test
+foo: bar
+baz: qux
+---
+Body.
+`)
+	_, warnings, err := ParseContentWithWarnings(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("warnings count = %d, want 2; warnings = %v", len(warnings), warnings)
+	}
+	// Check both unknown fields are reported (order may vary due to map iteration)
+	combined := strings.Join(warnings, " | ")
+	if !strings.Contains(combined, `"foo"`) || !strings.Contains(combined, `"baz"`) {
+		t.Errorf("warnings = %v, want both 'foo' and 'baz'", warnings)
+	}
+}
+
+func TestFrontmatter_AllKnownFields_NoWarnings(t *testing.T) {
+	content := []byte(`---
+name: full-agent
+description: Full agent definition
+model: opus
+tools: Read, Glob
+disallowedTools: Bash
+maxTurns: 5
+permissionMode: bypassPermissions
+memory: auto
+skills:
+  - commit
+criticalSystemReminder_EXPERIMENTAL: Be careful!
+---
+Full agent prompt.
+`)
+	_, warnings, err := ParseContentWithWarnings(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for known fields, got %v", warnings)
+	}
+}
+
+func TestFrontmatter_UnknownField_NoSuggestion(t *testing.T) {
+	content := []byte(`---
+description: Test
+zzzzRandomField: value
+---
+Body.
+`)
+	_, warnings, err := ParseContentWithWarnings(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings count = %d, want 1", len(warnings))
+	}
+	if !strings.Contains(warnings[0], `unknown field "zzzzRandomField"`) {
+		t.Errorf("warning = %q", warnings[0])
+	}
+	// Should NOT contain "did you mean" for an unrecognizable field
+	if strings.Contains(warnings[0], "did you mean") {
+		t.Errorf("should not suggest for unrecognizable field, got %q", warnings[0])
+	}
+}
+
+func TestFrontmatter_ColorField_Known(t *testing.T) {
+	content := []byte(`---
+description: Test
+color: blue
+---
+Body.
+`)
+	_, warnings, err := ParseContentWithWarnings(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("'color' should be a known field, got warnings: %v", warnings)
+	}
+}
+
+// --- Phase 7 Tests: Color Field ---
+
+func TestFrontmatter_ColorField_Hex(t *testing.T) {
+	content := []byte(`---
+description: Test
+color: "#FF5733"
+---
+Body.
+`)
+	def, err := ParseContent(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if def.Color != "#FF5733" {
+		t.Errorf("Color = %q, want '#FF5733'", def.Color)
+	}
+}
+
+func TestFrontmatter_ColorField_Named(t *testing.T) {
+	content := []byte(`---
+description: Test
+color: blue
+---
+Body.
+`)
+	def, err := ParseContent(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if def.Color != "blue" {
+		t.Errorf("Color = %q, want 'blue'", def.Color)
+	}
+}
+
+func TestFrontmatter_ColorField_Empty(t *testing.T) {
+	content := []byte(`---
+description: Test
+---
+Body.
+`)
+	def, err := ParseContent(content, "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if def.Color != "" {
+		t.Errorf("Color = %q, want empty", def.Color)
 	}
 }
 

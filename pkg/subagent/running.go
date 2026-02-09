@@ -49,6 +49,7 @@ type TaskResult struct {
 	Metrics TaskMetrics
 	State   AgentState
 	AgentID string
+	Error   string // error message (empty on success)
 }
 
 // AgentOutput is a thread-safe accumulator for streaming subagent output.
@@ -100,6 +101,7 @@ type RunningAgent struct {
 	Cancel         func()       // cancel function to stop the agent
 	Done           chan struct{} // closed when the agent finishes
 	Metrics        TaskMetrics
+	Warnings       []string     // non-fatal warnings from spawn (e.g., unknown tool names)
 
 	mu        sync.Mutex
 	cleanupFn func() // called on completion to unregister hooks etc.

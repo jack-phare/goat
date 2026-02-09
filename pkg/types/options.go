@@ -199,4 +199,5 @@ type AgentDefinition struct {
 	Memory           string                          `json:"memory,omitempty"`
 	Hooks            map[HookEvent][]HookCallbackMatcher `json:"hooks,omitempty"`
 	CriticalReminder string                          `json:"criticalSystemReminder_EXPERIMENTAL,omitempty"`
+	Color            string                          `json:"color,omitempty"`
 }

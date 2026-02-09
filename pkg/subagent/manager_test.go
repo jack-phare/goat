@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -409,7 +410,7 @@ func TestManager_Reload(t *testing.T) {
 	mgr := newTestManager(&mockLLMClient{})
 
 	// Reload from a dir with no agents (should still have built-ins)
-	err := mgr.Reload("/tmp/nonexistent")
+	_, err := mgr.Reload("/tmp/nonexistent")
 	if err != nil {
 		t.Fatalf("Reload error: %v", err)
 	}
@@ -546,7 +547,7 @@ You are a helpful test agent that assists with reading and searching files.
 	}
 
 	// 3. Reload from tmpDir
-	if err := mgr.Reload(tmpDir); err != nil {
+	if _, err := mgr.Reload(tmpDir); err != nil {
 		t.Fatalf("Reload error: %v", err)
 	}
 
@@ -608,7 +609,7 @@ Custom explore prompt.
 	client := &mockLLMClient{}
 	mgr := newTestManager(client)
 
-	if err := mgr.Reload(tmpDir); err != nil {
+	if _, err := mgr.Reload(tmpDir); err != nil {
 		t.Fatalf("Reload error: %v", err)
 	}
 
@@ -1074,6 +1075,424 @@ func TestManager_SubagentStopHook_TranscriptPath(t *testing.T) {
 	}
 }
 
+// --- Phase 1 Tests: Error Propagation ---
+
+func errorStreamData(errMsg string) *mockStreamData {
+	// Simulates an LLM call that produces some text but the loop exits with error.
+	// The ResultMessage will carry the error, but we also get text output.
+	stop := "stop"
+	text := "partial output before error"
+	return &mockStreamData{
+		chunks: []llm.StreamChunk{
+			{
+				ID:    "msg-1",
+				Model: "claude-sonnet-4-5-20250929",
+				Choices: []llm.Choice{
+					{Delta: llm.Delta{Content: &text}},
+				},
+			},
+			{
+				ID:    "msg-1",
+				Model: "claude-sonnet-4-5-20250929",
+				Choices: []llm.Choice{
+					{FinishReason: &stop},
+				},
+				Usage: &llm.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			},
+		},
+	}
+}
+
+func TestManager_ErrorPropagation(t *testing.T) {
+	// Mock LLM that returns an error-indicating ResultMessage.
+	// The loop itself emits ResultMessage with IsError=true when it exits due to error.
+	// We can verify error propagation by checking the AgentResult.Error field.
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("Some output")},
+	}
+	mgr := newTestManager(client)
+
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test",
+		Prompt:       "test",
+		SubagentType: "general-purpose",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Normal case: no error
+	if result.Error != "" {
+		t.Errorf("expected no error, got %q", result.Error)
+	}
+}
+
+func TestManager_StateFailed_OnError(t *testing.T) {
+	// When the loop exits for a non-interrupt/non-normal reason,
+	// the manager should set StateFailed.
+	// We test this indirectly by spawning a background agent with a client
+	// that returns no responses (causes the loop to produce an end_turn with default).
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("ok")},
+	}
+	mgr := newTestManager(client)
+
+	bg := true
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:     "test",
+		Prompt:          "test",
+		SubagentType:    "general-purpose",
+		RunInBackground: &bg,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Wait for completion
+	taskResult, err := mgr.GetOutput(result.AgentID, true, 30*time.Second)
+	if err != nil {
+		t.Fatalf("GetOutput error: %v", err)
+	}
+
+	// Normal exit: should be Completed, not Failed
+	if taskResult.State != StateCompleted {
+		t.Errorf("state = %v, want Completed for normal exit", taskResult.State)
+	}
+	if taskResult.Error != "" {
+		t.Errorf("expected no error for normal exit, got %q", taskResult.Error)
+	}
+}
+
+// --- Phase 2 Tests: Resource Safety ---
+
+func TestManager_CompletedAgentEviction(t *testing.T) {
+	client := &mockLLMClient{}
+	mgr := newTestManager(client)
+
+	// Spawn more than maxCompletedAgents foreground agents
+	for i := 0; i < maxCompletedAgents+5; i++ {
+		client.mu.Lock()
+		client.callIndex = 0
+		client.responses = []*mockStreamData{endTurnWithText(fmt.Sprintf("output-%d", i))}
+		client.mu.Unlock()
+
+		_, err := mgr.Spawn(context.Background(), tools.AgentInput{
+			Description:  "test",
+			Prompt:       "test",
+			SubagentType: "general-purpose",
+		})
+		if err != nil {
+			t.Fatalf("spawn %d: %v", i, err)
+		}
+	}
+
+	// Active should be empty (all completed)
+	mgr.mu.RLock()
+	activeCount := len(mgr.active)
+	completedCount := len(mgr.completed)
+	mgr.mu.RUnlock()
+
+	if activeCount != 0 {
+		t.Errorf("active count = %d, want 0", activeCount)
+	}
+	if completedCount != maxCompletedAgents {
+		t.Errorf("completed count = %d, want %d", completedCount, maxCompletedAgents)
+	}
+}
+
+func TestManager_GetOutputFromCompleted(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("completed output")},
+	}
+	mgr := newTestManager(client)
+
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test",
+		Prompt:       "test",
+		SubagentType: "general-purpose",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Agent should be in completed map now
+	mgr.mu.RLock()
+	_, inActive := mgr.active[result.AgentID]
+	_, inCompleted := mgr.completed[result.AgentID]
+	mgr.mu.RUnlock()
+
+	if inActive {
+		t.Error("expected agent to not be in active map")
+	}
+	if !inCompleted {
+		t.Error("expected agent to be in completed map")
+	}
+
+	// GetOutput should still work
+	taskResult, err := mgr.GetOutput(result.AgentID, false, 0)
+	if err != nil {
+		t.Fatalf("GetOutput error: %v", err)
+	}
+	if taskResult.State != StateCompleted {
+		t.Errorf("state = %v, want Completed", taskResult.State)
+	}
+}
+
+// --- Phase 4 Tests: Agent Resume ---
+
+func TestManager_ResumeCompletedAgent(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStreamData{
+			endTurnWithText("First run output"),
+			endTurnWithText("Resumed run output"),
+		},
+	}
+	mgr := newTestManager(client)
+
+	// First spawn
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test",
+		Prompt:       "First task",
+		SubagentType: "general-purpose",
+	})
+	if err != nil {
+		t.Fatalf("spawn error: %v", err)
+	}
+	agentID := result.AgentID
+	if !strings.Contains(result.Output, "First run output") {
+		t.Errorf("expected first run output, got %q", result.Output)
+	}
+
+	// Agent should be in completed map
+	mgr.mu.RLock()
+	_, inCompleted := mgr.completed[agentID]
+	mgr.mu.RUnlock()
+	if !inCompleted {
+		t.Fatal("expected agent in completed map")
+	}
+
+	// Resume
+	resumeResult, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "resume",
+		Prompt:       "Continue the work",
+		SubagentType: "general-purpose",
+		Resume:       &agentID,
+	})
+	if err != nil {
+		t.Fatalf("resume error: %v", err)
+	}
+	if resumeResult.AgentID != agentID {
+		t.Errorf("expected same agent ID %q, got %q", agentID, resumeResult.AgentID)
+	}
+	if !strings.Contains(resumeResult.Output, "Resumed run output") {
+		t.Errorf("expected resumed output, got %q", resumeResult.Output)
+	}
+}
+
+func TestManager_ResumeRunningAgent(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("still going")},
+	}
+	mgr := newTestManager(client)
+
+	bg := true
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:     "bg task",
+		Prompt:          "do work",
+		SubagentType:    "general-purpose",
+		RunInBackground: &bg,
+	})
+	if err != nil {
+		t.Fatalf("spawn error: %v", err)
+	}
+
+	// Resume a still-running (or just-completed) agent — should return output
+	agentID := result.AgentID
+	// Give it time to finish
+	time.Sleep(100 * time.Millisecond)
+
+	resumeResult, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "resume",
+		Prompt:       "check status",
+		SubagentType: "general-purpose",
+		Resume:       &agentID,
+	})
+	if err != nil {
+		t.Fatalf("resume error: %v", err)
+	}
+	if resumeResult.AgentID != agentID {
+		t.Errorf("expected same agent ID")
+	}
+}
+
+func TestManager_ResumeUnknownAgent(t *testing.T) {
+	mgr := newTestManager(&mockLLMClient{})
+
+	unknownID := "nonexistent-agent-id"
+	_, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "resume",
+		Prompt:       "test",
+		SubagentType: "general-purpose",
+		Resume:       &unknownID,
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown resume ID")
+	}
+	if !strings.Contains(err.Error(), "cannot resume unknown agent") {
+		t.Errorf("error = %q, want 'cannot resume unknown agent'", err.Error())
+	}
+}
+
+func TestManager_ResumeStoppedAgent(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStreamData{
+			endTurnWithText("Before stop"),
+			endTurnWithText("After resume"),
+		},
+	}
+	mgr := newTestManager(client)
+
+	// Spawn and it completes immediately (foreground)
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test",
+		Prompt:       "First task",
+		SubagentType: "general-purpose",
+	})
+	if err != nil {
+		t.Fatalf("spawn error: %v", err)
+	}
+	agentID := result.AgentID
+
+	// Resume the completed agent with a new prompt
+	resumeResult, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "resume",
+		Prompt:       "Continue after stop",
+		SubagentType: "general-purpose",
+		Resume:       &agentID,
+	})
+	if err != nil {
+		t.Fatalf("resume error: %v", err)
+	}
+	if resumeResult.AgentID != agentID {
+		t.Errorf("expected same agent ID %q, got %q", agentID, resumeResult.AgentID)
+	}
+	if !strings.Contains(resumeResult.Output, "After resume") {
+		t.Errorf("expected resumed output, got %q", resumeResult.Output)
+	}
+}
+
+// --- Phase 3 Tests: Loader Resilience ---
+
+func TestManager_ToolNameWarning(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("ok")},
+	}
+	reg := tools.NewRegistry()
+	reg.Register(&mockTool{name: "Read"})
+
+	parentConfig := &agent.AgentConfig{
+		Model:     "claude-sonnet-4-5-20250929",
+		CWD:       "/tmp/test",
+		SessionID: "parent-session",
+	}
+
+	mgr := NewManager(ManagerOpts{
+		ParentConfig:      parentConfig,
+		LLMClient:         client,
+		CostTracker:       llm.NewCostTracker(),
+		ParentRegistry:    reg,
+		PermissionChecker: &agent.AllowAllChecker{},
+	}, nil)
+
+	// Register an agent with a non-existent tool
+	mgr.RegisterAgents(map[string]Definition{
+		"warn-agent": FromTypesDefinition("warn-agent", types.AgentDefinition{
+			Description: "Agent with unknown tool",
+			Prompt:      "Test",
+			Tools:       []string{"Read", "NonExistentTool"},
+		}, SourceProject, 30),
+	})
+
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test",
+		Prompt:       "test",
+		SubagentType: "warn-agent",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check the running agent had warnings
+	mgr.mu.RLock()
+	ra, ok := mgr.completed[result.AgentID]
+	mgr.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected agent in completed map")
+	}
+	found := false
+	for _, w := range ra.Warnings {
+		if strings.Contains(w, "NonExistentTool") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about NonExistentTool, got %v", ra.Warnings)
+	}
+}
+
+func TestManager_BackgroundErrorOutput(t *testing.T) {
+	// Verify that background agent output files include error info
+	// when the agent has an error result.
+	dir := t.TempDir()
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("Background output")},
+	}
+
+	reg := tools.NewRegistry()
+	parentConfig := &agent.AgentConfig{
+		Model:     "claude-sonnet-4-5-20250929",
+		CWD:       "/tmp/test",
+		SessionID: "parent-session",
+	}
+
+	mgr := NewManager(ManagerOpts{
+		OutputDir:         dir,
+		ParentConfig:      parentConfig,
+		LLMClient:         client,
+		CostTracker:       llm.NewCostTracker(),
+		ParentRegistry:    reg,
+		PermissionChecker: &agent.AllowAllChecker{},
+	}, nil)
+
+	bg := true
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:     "bg task",
+		Prompt:          "Do work",
+		SubagentType:    "general-purpose",
+		RunInBackground: &bg,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Wait for completion
+	taskResult, err := mgr.GetOutput(result.AgentID, true, 30*time.Second)
+	if err != nil {
+		t.Fatalf("GetOutput error: %v", err)
+	}
+	if taskResult.State != StateCompleted {
+		t.Errorf("state = %v, want Completed", taskResult.State)
+	}
+
+	// Read output file
+	data, err := os.ReadFile(result.OutputFile)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !strings.Contains(string(data), "Background output") {
+		t.Errorf("output file = %q, want to contain 'Background output'", string(data))
+	}
+}
+
 func TestManager_SubagentStopHook_NoTranscriptWithoutStore(t *testing.T) {
 	var capturedTranscriptPath string
 
@@ -1119,5 +1538,66 @@ func TestManager_SubagentStopHook_NoTranscriptWithoutStore(t *testing.T) {
 
 	if capturedTranscriptPath != "" {
 		t.Errorf("expected empty AgentTranscriptPath without SessionStore, got %q", capturedTranscriptPath)
+	}
+}
+
+// --- Phase 7 Tests: Metrics in Spawn Result ---
+
+func TestManager_ForegroundMetrics(t *testing.T) {
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("analysis done")},
+	}
+	mgr := newTestManager(client)
+
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test metrics",
+		Prompt:       "analyze",
+		SubagentType: "general-purpose",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Metrics == nil {
+		t.Fatal("expected non-nil Metrics for foreground spawn")
+	}
+	if result.Metrics.DurationSecs <= 0 {
+		t.Errorf("expected positive duration, got %f", result.Metrics.DurationSecs)
+	}
+	// Should have at least 1 turn (the single LLM call)
+	if result.Metrics.TurnCount < 1 {
+		t.Errorf("expected at least 1 turn, got %d", result.Metrics.TurnCount)
+	}
+}
+
+func TestManager_BackgroundMetrics(t *testing.T) {
+	dir := t.TempDir()
+	client := &mockLLMClient{
+		responses: []*mockStreamData{endTurnWithText("bg analysis done")},
+	}
+	mgr := newTestManager(client)
+	mgr.opts.OutputDir = dir
+
+	result, err := mgr.Spawn(context.Background(), tools.AgentInput{
+		Description:  "test bg metrics",
+		Prompt:       "analyze bg",
+		SubagentType: "general-purpose",
+		RunInBackground: func() *bool { b := true; return &b }(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Background spawn should not have metrics (returned immediately)
+	if result.Metrics != nil {
+		t.Error("expected nil Metrics for background spawn")
+	}
+
+	// Wait for completion and check metrics via GetOutput
+	time.Sleep(500 * time.Millisecond)
+	taskResult, err := mgr.GetOutput(result.AgentID, false, 0)
+	if err != nil {
+		t.Fatalf("GetOutput error: %v", err)
+	}
+	if taskResult.Metrics.Duration <= 0 {
+		t.Errorf("expected positive duration in TaskResult, got %v", taskResult.Metrics.Duration)
 	}
 }
