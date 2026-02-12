@@ -61,3 +61,37 @@ Not yet run. Requires ~280GB of Docker images on first pull.
 | SWE-bench (50 samples) | ~$1.00 |
 
 All costs via gpt-5-nano, the cheapest available model.
+
+## Cross-Model Benchmark (GOAT-15)
+
+**Status**: Runner script ready at `evals/run_cross_model.sh`
+
+### Models to benchmark
+
+| Model | Provider | Status |
+|-------|----------|--------|
+| gpt-5-nano | Azure OpenAI | baseline done (see above) |
+| gpt-5-mini | Azure OpenAI | pending |
+| gpt-4o-mini | Azure OpenAI | pending |
+| llama-3.3-70b | Groq | pending |
+
+### How to run
+
+```bash
+# 1. Start LiteLLM proxy
+cd dev && docker compose up -d
+
+# 2. Build Linux eval binary
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o evals/goat-eval-linux ./cmd/eval/
+
+# 3. Activate evals venv
+cd evals && source .venv/bin/activate
+
+# 4. Run all models
+./evals/run_cross_model.sh
+
+# 5. Or run a single model
+./evals/run_cross_model.sh gpt-5-mini
+```
+
+Results will be saved to `evals/results/` with an auto-generated comparison report.

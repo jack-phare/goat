@@ -147,6 +147,44 @@ func TestLoadClaudeMD_CWDAndParentCombined(t *testing.T) {
 	}
 }
 
+func TestLoadClaudeMD_ParentWalkAllThreeFiles(t *testing.T) {
+	// Parent directory should find all three file patterns, not just CLAUDE.md
+	root := t.TempDir()
+	child := filepath.Join(root, "project")
+	os.MkdirAll(child, 0o755)
+	os.MkdirAll(filepath.Join(root, ".claude"), 0o755)
+
+	writeFile(t, filepath.Join(root, "CLAUDE.md"), "root-main")
+	writeFile(t, filepath.Join(root, ".claude", "CLAUDE.md"), "root-dot-claude")
+	writeFile(t, filepath.Join(root, "CLAUDE.local.md"), "root-local")
+
+	result := LoadClaudeMD(child)
+	parts := strings.Split(result, "\n\n---\n\n")
+
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts from parent walk, got %d: %q", len(parts), result)
+	}
+	if parts[0] != "root-main" {
+		t.Errorf("part[0] = %q, want 'root-main'", parts[0])
+	}
+	if parts[1] != "root-dot-claude" {
+		t.Errorf("part[1] = %q, want 'root-dot-claude'", parts[1])
+	}
+	if parts[2] != "root-local" {
+		t.Errorf("part[2] = %q, want 'root-local'", parts[2])
+	}
+}
+
+func TestLoadManagedPolicy_NoFile(t *testing.T) {
+	// LoadManagedPolicy should return empty on non-existent files
+	// (the default paths like /Library/Application Support/ClaudeCode/CLAUDE.md
+	// won't exist in test environments)
+	result := LoadManagedPolicy()
+	// We can't assert it's empty on a machine that has the file, but at least
+	// verify it doesn't panic
+	_ = result
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

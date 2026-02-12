@@ -538,6 +538,7 @@ func setActiveSkillScope(toolBlocks []types.ContentBlock, config *AgentConfig, s
 }
 
 // recordToolFileAccess extracts file paths from tool input and records them in state.
+// It also updates config.ActiveFilePaths for conditional rules injection.
 func recordToolFileAccess(state *LoopState, toolName string, input map[string]any) {
 	opMap := map[string]string{
 		"Read":         "read",
@@ -561,4 +562,16 @@ func recordToolFileAccess(state *LoopState, toolName string, input map[string]an
 	if path, ok := input["path"].(string); ok && path != "" {
 		state.RecordFileAccess(path, op)
 	}
+}
+
+// syncActiveFilePaths updates config.ActiveFilePaths from state.AccessedFiles.
+func syncActiveFilePaths(config *AgentConfig, state *LoopState) {
+	if state.AccessedFiles == nil {
+		return
+	}
+	paths := make([]string, 0, len(state.AccessedFiles))
+	for p := range state.AccessedFiles {
+		paths = append(paths, p)
+	}
+	config.ActiveFilePaths = paths
 }

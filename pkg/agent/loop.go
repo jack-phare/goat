@@ -80,6 +80,12 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 		}
 	}
 
+	// 3.5 Initialize session memory tracker if enabled
+	var memTracker *SessionMemoryTracker
+	if config.SessionMemoryEnabled && config.SessionDir != "" {
+		memTracker = NewSessionMemoryTracker(config.SessionDir, config.LLMClient, config.Prompter)
+	}
+
 	// 4. Assemble system prompt
 	systemPrompt := config.Prompter.Assemble(config)
 
@@ -118,16 +124,22 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 			}
 		}
 
+		// 5.4b Background session memory extraction
+		if memTracker != nil && memTracker.ShouldExtract() {
+			go memTracker.Extract(ctx, state.Messages)
+		}
+
 		// 5.5 Proactive compaction check
 		budget := calculateTokenBudget(config, state, systemPrompt)
 		if config.Compactor.ShouldCompact(budget) {
 			compacted, err := config.Compactor.Compact(ctx, CompactRequest{
-				Messages:  state.Messages,
-				Model:     config.Model,
-				Budget:    budget,
-				Trigger:   "auto",
-				SessionID: state.SessionID,
-				EmitCh:    ch,
+				Messages:   state.Messages,
+				Model:      config.Model,
+				Budget:     budget,
+				Trigger:    "auto",
+				SessionID:  state.SessionID,
+				SessionDir: config.SessionDir,
+				EmitCh:     ch,
 			})
 			if err == nil {
 				state.Messages = compacted
@@ -247,6 +259,11 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 		}
 		q.mu.Unlock()
 
+		// 9.5 Track tokens for session memory extraction
+		if memTracker != nil {
+			memTracker.TrackTokens(resp.Usage.InputTokens, resp.Usage.OutputTokens)
+		}
+
 		// 10. Emit assistant message
 		emitAssistant(ch, resp, state)
 
@@ -316,6 +333,16 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 
 			// Execute tools
 			toolResults, interrupted := executeTools(ctx, toolBlocks, config, state, ch)
+
+			// Track tool calls for session memory
+			if memTracker != nil {
+				for range toolBlocks {
+					memTracker.TrackToolCall()
+				}
+			}
+
+			// Sync active file paths for conditional rules injection
+			syncActiveFilePaths(config, state)
 
 			// Activate skill permission scope if a Skill tool was invoked
 			setActiveSkillScope(toolBlocks, config, state)

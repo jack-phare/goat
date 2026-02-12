@@ -39,7 +39,7 @@ func TestIntegration_FullAssembly(t *testing.T) {
 		"authorized security testing",   // Censoring policy
 		"Doing tasks",                   // Doing tasks
 		"Executing actions with care",   // Actions with care
-		"Tool usage policy",             // Tool usage policy  (lowercase matches actual)
+		"# Using your tools",            // Using your tools (dynamic section, GOAT-07c)
 		"Tone and style",                // Tone and style
 		"parallel tool",                 // Parallel tool call note
 		"Accessing Past Sessions",       // Sessions

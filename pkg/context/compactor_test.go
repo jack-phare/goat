@@ -3,9 +3,12 @@ package context
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jg-phare/goat/pkg/agent"
 	"github.com/jg-phare/goat/pkg/llm"
@@ -382,5 +385,162 @@ func TestNewCompactor_Defaults(t *testing.T) {
 	}
 	if c.hooks == nil {
 		t.Error("default hooks should not be nil")
+	}
+}
+
+// makeMessages builds n alternating user/assistant messages with enough content
+// to give each message ~50 estimated tokens (200 chars / 4).
+func makeMessages(n int) []llm.ChatMessage {
+	msgs := make([]llm.ChatMessage, n)
+	for i := range msgs {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs[i] = llm.ChatMessage{
+			Role:    role,
+			Content: strings.Repeat(fmt.Sprintf("msg%d-", i), 40),
+		}
+	}
+	return msgs
+}
+
+// --- Phase 6: Session Memory Integration Tests ---
+
+func TestCompact_UsesSessionSummaryWhenAvailable(t *testing.T) {
+	sessionDir := t.TempDir()
+
+	// Create a fresh session memory summary
+	os.MkdirAll(filepath.Join(sessionDir, "session-memory"), 0o755)
+	os.WriteFile(filepath.Join(sessionDir, "session-memory", "summary.md"),
+		[]byte("Pre-computed session summary here."), 0o644)
+
+	c := NewCompactor(CompactorConfig{
+		ThresholdPct:  0.50,
+		PreserveRatio: 0.30,
+	})
+
+	messages := makeMessages(20) // enough to trigger compaction
+	budget := agent.TokenBudget{
+		ContextLimit:     1000,
+		SystemPromptTkns: 100,
+		MaxOutputTkns:    100,
+		MessageTkns:      900,
+	}
+
+	compacted, err := c.Compact(context.Background(), agent.CompactRequest{
+		Messages:   messages,
+		Model:      "claude-haiku-4-5-20251001",
+		Budget:     budget,
+		Trigger:    "auto",
+		SessionDir: sessionDir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The first message should be the pre-computed summary
+	if len(compacted) == 0 {
+		t.Fatal("compacted should not be empty")
+	}
+	first, ok := compacted[0].Content.(string)
+	if !ok {
+		t.Fatal("first message content should be string")
+	}
+	if !strings.Contains(first, "Pre-computed session summary here.") {
+		t.Errorf("expected session summary in first message, got %q", first)
+	}
+}
+
+func TestCompact_FallsBackToLLMWhenNoSummary(t *testing.T) {
+	sessionDir := t.TempDir()
+	// No summary file — should fall through to LLM (or truncation since no client)
+
+	c := NewCompactor(CompactorConfig{
+		ThresholdPct:  0.50,
+		PreserveRatio: 0.30,
+	})
+
+	messages := makeMessages(20)
+	budget := agent.TokenBudget{
+		ContextLimit:     1000,
+		SystemPromptTkns: 100,
+		MaxOutputTkns:    100,
+		MessageTkns:      900,
+	}
+
+	compacted, err := c.Compact(context.Background(), agent.CompactRequest{
+		Messages:   messages,
+		Model:      "claude-haiku-4-5-20251001",
+		Budget:     budget,
+		Trigger:    "auto",
+		SessionDir: sessionDir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Without LLM client, should fall back to truncation (no summary message)
+	if len(compacted) >= len(messages) {
+		t.Error("compacted should have fewer messages than original")
+	}
+}
+
+func TestCompact_StaleSessionSummaryTriggersLLM(t *testing.T) {
+	sessionDir := t.TempDir()
+
+	// Create an old session memory summary
+	summaryDir := filepath.Join(sessionDir, "session-memory")
+	os.MkdirAll(summaryDir, 0o755)
+	summaryPath := filepath.Join(summaryDir, "summary.md")
+	os.WriteFile(summaryPath, []byte("Old summary."), 0o644)
+
+	// Set mod time to 10 minutes ago
+	oldTime := time.Now().Add(-10 * time.Minute)
+	os.Chtimes(summaryPath, oldTime, oldTime)
+
+	c := NewCompactor(CompactorConfig{
+		ThresholdPct:  0.50,
+		PreserveRatio: 0.30,
+	})
+
+	messages := makeMessages(20)
+	budget := agent.TokenBudget{
+		ContextLimit:     1000,
+		SystemPromptTkns: 100,
+		MaxOutputTkns:    100,
+		MessageTkns:      900,
+	}
+
+	compacted, err := c.Compact(context.Background(), agent.CompactRequest{
+		Messages:   messages,
+		Model:      "claude-haiku-4-5-20251001",
+		Budget:     budget,
+		Trigger:    "auto",
+		SessionDir: sessionDir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Stale summary should be skipped — falls back to truncation (no LLM client)
+	for _, msg := range compacted {
+		if s, ok := msg.Content.(string); ok && strings.Contains(s, "Old summary.") {
+			t.Error("stale summary should not be used")
+		}
+	}
+}
+
+func TestLoadRecentSessionSummary_EmptyDir(t *testing.T) {
+	result := loadRecentSessionSummary("")
+	if result != "" {
+		t.Errorf("expected empty, got %q", result)
+	}
+}
+
+func TestLoadRecentSessionSummary_NoFile(t *testing.T) {
+	result := loadRecentSessionSummary(t.TempDir())
+	if result != "" {
+		t.Errorf("expected empty, got %q", result)
 	}
 }

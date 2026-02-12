@@ -1,10 +1,11 @@
 package subagent
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jg-phare/goat/pkg/prompt"
 )
 
 const maxMemoryLines = 200
@@ -49,28 +50,12 @@ func ensureMemoryDir(dir string) error {
 
 // loadMemoryContent reads the first maxMemoryLines lines of MEMORY.md from the given dir.
 // Returns empty string if the file doesn't exist.
+// Delegates to the shared prompt.LoadFirstNLines helper.
 func loadMemoryContent(dir string) (string, error) {
 	if dir == "" {
 		return "", nil
 	}
-
-	path := filepath.Join(dir, "MEMORY.md")
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	defer f.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() && len(lines) < maxMemoryLines {
-		lines = append(lines, scanner.Text())
-	}
-
-	return strings.Join(lines, "\n"), scanner.Err()
+	return prompt.LoadFirstNLines(filepath.Join(dir, "MEMORY.md"), maxMemoryLines)
 }
 
 // sanitizePath converts a path into a safe directory name.

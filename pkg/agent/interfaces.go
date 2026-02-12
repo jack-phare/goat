@@ -41,12 +41,13 @@ func (b TokenBudget) Available() int {
 
 // CompactRequest is the input to a Compact call.
 type CompactRequest struct {
-	Messages  []llm.ChatMessage
-	Model     string
-	Budget    TokenBudget
-	Trigger   string // "auto" | "manual"
-	SessionID string
-	EmitCh    chan<- types.SDKMessage
+	Messages   []llm.ChatMessage
+	Model      string
+	Budget     TokenBudget
+	Trigger    string // "auto" | "manual"
+	SessionID  string
+	SessionDir string // session directory for session-memory lookup
+	EmitCh     chan<- types.SDKMessage
 }
 
 // SystemPromptAssembler builds the system prompt for an LLM call.

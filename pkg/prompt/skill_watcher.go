@@ -5,16 +5,26 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/jg-phare/goat/pkg/types"
 )
+
+// skillDirMeta holds metadata about a watched skill directory.
+type skillDirMeta struct {
+	path     string
+	source   types.SkillSource
+	priority int
+}
 
 // SkillWatcher watches skill directories for changes and updates the registry.
 type SkillWatcher struct {
 	registry *SkillRegistry
 	dirs     []string
+	dirMeta  []skillDirMeta // source/priority metadata per directory
 	debounce time.Duration
 
 	mu     sync.Mutex
@@ -26,6 +36,21 @@ func NewSkillWatcher(registry *SkillRegistry, dirs []string) *SkillWatcher {
 	return &SkillWatcher{
 		registry: registry,
 		dirs:     dirs,
+		debounce: 500 * time.Millisecond,
+	}
+}
+
+// NewSkillWatcherWithMeta creates a SkillWatcher with directory source metadata.
+// This allows the watcher to correctly set Source and Priority on reloaded skills.
+func NewSkillWatcherWithMeta(registry *SkillRegistry, meta []skillDirMeta) *SkillWatcher {
+	dirs := make([]string, len(meta))
+	for i, m := range meta {
+		dirs[i] = m.path
+	}
+	return &SkillWatcher{
+		registry: registry,
+		dirs:     dirs,
+		dirMeta:  meta,
 		debounce: 500 * time.Millisecond,
 	}
 }
@@ -136,6 +161,16 @@ func (w *SkillWatcher) run(ctx context.Context, watcher *fsnotify.Watcher) {
 	}
 }
 
+// findDirMeta returns the metadata for the watched directory that contains the given file path.
+func (w *SkillWatcher) findDirMeta(filePath string) *skillDirMeta {
+	for i := range w.dirMeta {
+		if strings.HasPrefix(filePath, w.dirMeta[i].path+string(filepath.Separator)) {
+			return &w.dirMeta[i]
+		}
+	}
+	return nil
+}
+
 // isSkillDir checks if a path is a potential skill directory (parent of SKILL.md).
 func isSkillDir(path string) bool {
 	info, err := os.Stat(path)
@@ -170,6 +205,11 @@ func (w *SkillWatcher) reload(event fsnotify.Event) {
 		if err != nil {
 			log.Printf("skill watcher: error reloading %s: %v", skillFile, err)
 			return
+		}
+		// Set Source and Priority from directory metadata (if available)
+		if meta := w.findDirMeta(skillFile); meta != nil {
+			entry.Source = meta.source
+			entry.Priority = meta.priority
 		}
 		w.registry.Register(*entry)
 		log.Printf("skill watcher: reloaded skill %q", entry.Name)

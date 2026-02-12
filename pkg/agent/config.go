@@ -61,10 +61,28 @@ type AgentConfig struct {
 	LearningMode    bool
 	ScratchpadDir   string
 
+	// Auto-memory (main agent persistent project-scoped memory)
+	AutoMemoryDir     string // resolved auto-memory directory path
+	AutoMemoryContent string // loaded MEMORY.md content (first 200 lines)
+
+	// Session memory extraction
+	SessionMemoryEnabled bool   // enable background session memory extraction
+	SessionMemoryModel   string // lightweight model for extractions (default: haiku)
+	SessionDir           string // session directory for memory storage
+
+	// Session cleanup
+	CleanupRetentionDays int // sessions older than this are deleted (default: 30)
+
 	// Content
-	ClaudeMDContent string   // pre-loaded CLAUDE.md content
-	OutputStyle     string   // output style config (empty = default)
-	SlashCommands   []string // registered slash command names
+	ManagedPolicyContent string   // OS-level managed CLAUDE.md policy (highest priority)
+	ClaudeMDContent      string   // pre-loaded CLAUDE.md content
+	OutputStyle          string   // output style config (empty = default)
+	SlashCommands        []string // registered slash command names
+
+	// Rules (.claude/rules/ directory)
+	ProjectRules    []RuleEntry // rules loaded from .claude/rules/
+	UserRules       []RuleEntry // rules loaded from ~/.claude/rules/
+	ActiveFilePaths []string    // files currently being worked on (for conditional injection)
 
 	// Git state (snapshot at session start)
 	GitBranch        string
@@ -114,6 +132,12 @@ type AgentConfig struct {
 	CostTracker  *llm.CostTracker
 	SessionStore SessionStore // nil = no persistence (default)
 	Skills       SkillProvider // nil = no skills
+}
+
+// RuleEntry is a rule loaded from .claude/rules/ for injection into the system prompt.
+type RuleEntry struct {
+	Content      string   // markdown body
+	PathPatterns []string // glob patterns from frontmatter (empty = unconditional)
 }
 
 // DynamicModelConfig configures automatic model selection based on estimated prompt complexity.

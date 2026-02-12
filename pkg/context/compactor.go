@@ -2,6 +2,10 @@ package context
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jg-phare/goat/pkg/agent"
@@ -117,9 +121,16 @@ func (c *Compactor) Compact(ctx context.Context, req agent.CompactRequest) ([]ll
 	compactZone := req.Messages[:splitIdx]
 	preserveZone := req.Messages[splitIdx:]
 
-	// 4. Generate summary via LLM call
+	// 4. Try session memory summary first (if available and recent)
 	var compacted []llm.ChatMessage
-	if c.client != nil {
+	if sessionSummary := loadRecentSessionSummary(req.SessionDir); sessionSummary != "" {
+		summaryMsg := llm.ChatMessage{
+			Role:    "user",
+			Content: "[Previous conversation summary]\n\n" + sessionSummary,
+		}
+		compacted = append([]llm.ChatMessage{summaryMsg}, preserveZone...)
+	} else if c.client != nil {
+		// 4b. Fall back to LLM-generated summary
 		summary, err := generateSummary(ctx, compactZone, c.client, c.summaryModel, customInstructions)
 		if err != nil {
 			// Fallback: simple truncation (drop oldest messages)
@@ -158,4 +169,29 @@ func (c *Compactor) Compact(ctx context.Context, req agent.CompactRequest) ([]ll
 	}
 
 	return compacted, nil
+}
+
+// sessionSummaryMaxAge is the maximum age of a session summary to be considered fresh.
+const sessionSummaryMaxAge = 5 * time.Minute
+
+// loadRecentSessionSummary reads session-memory/summary.md if it exists and is recent.
+// Returns empty string if no summary, stale (>5 min old), or on error.
+func loadRecentSessionSummary(sessionDir string) string {
+	if sessionDir == "" {
+		return ""
+	}
+	path := filepath.Join(sessionDir, "session-memory", "summary.md")
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	// Check freshness
+	if time.Since(info.ModTime()) > sessionSummaryMaxAge {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

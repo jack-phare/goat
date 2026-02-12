@@ -22,8 +22,10 @@ func TestAssembler_MinimalConfig(t *testing.T) {
 	// Should contain "always" sections
 	mustContain(t, result, "interactive CLI tool")
 	mustContain(t, result, "with software engineering tasks.")
+	mustContain(t, result, "# System")
 	mustContain(t, result, "Doing tasks")
 	mustContain(t, result, "Executing actions with care")
+	mustContain(t, result, "# Using your tools")
 	mustContain(t, result, "Tone and style")
 	mustContain(t, result, "parallel tool")
 
@@ -202,22 +204,34 @@ func TestAssembler_SectionOrdering(t *testing.T) {
 
 	result := a.Assemble(config)
 
-	// Verify ordering: main prompt before doing tasks before CLAUDE.md before output style before append
+	// Verify CC-matching order: Identity -> System -> Doing Tasks -> Actions -> Using Tools -> Tone -> ... -> CLAUDE.md -> Style -> Append
 	idxMain := strings.Index(result, "interactive CLI tool")
+	idxSystem := strings.Index(result, "# System")
 	idxDoing := strings.Index(result, "Doing tasks")
 	idxCare := strings.Index(result, "Executing actions with care")
-	idxClaudeMD := strings.Index(result, "CLAUDE.md")
+	idxUsing := strings.Index(result, "# Using your tools")
+	idxTone := strings.Index(result, "Tone and style")
+	idxClaudeMD := strings.Index(result, "# CLAUDE.md")
 	idxStyle := strings.Index(result, "# Output Style")
 	idxAppend := strings.LastIndex(result, "FINAL")
 
-	if idxMain >= idxDoing {
-		t.Error("main prompt should come before doing tasks")
+	if idxMain >= idxSystem {
+		t.Error("main prompt should come before # System")
+	}
+	if idxSystem >= idxDoing {
+		t.Error("# System should come before Doing tasks")
 	}
 	if idxDoing >= idxCare {
 		t.Error("doing tasks should come before executing actions with care")
 	}
-	if idxCare >= idxClaudeMD {
-		t.Error("executing actions should come before CLAUDE.md")
+	if idxCare >= idxUsing {
+		t.Error("executing actions should come before # Using your tools")
+	}
+	if idxUsing >= idxTone {
+		t.Error("# Using your tools should come before Tone and style")
+	}
+	if idxTone >= idxClaudeMD {
+		t.Error("Tone and style should come before CLAUDE.md")
 	}
 	if idxClaudeMD >= idxStyle {
 		t.Error("CLAUDE.md should come before output style")
@@ -225,6 +239,82 @@ func TestAssembler_SectionOrdering(t *testing.T) {
 	if idxStyle >= idxAppend {
 		t.Error("output style should come before append")
 	}
+}
+
+// --- GOAT-07a Tests: # System Section ---
+
+func TestAssembler_SystemSection(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		PromptVersion: "2.1.37",
+	}
+
+	result := a.Assemble(config)
+
+	// All 6 bullet points from CC's SKz() must be present
+	mustContain(t, result, "# System")
+	mustContain(t, result, "All text you output outside of tool use is displayed to the user")
+	mustContain(t, result, "Tools are executed in a user-selected permission mode")
+	mustContain(t, result, "<system-reminder>")
+	mustContain(t, result, "prompt injection")
+	mustContain(t, result, "hooks")
+	mustContain(t, result, "automatically compress prior messages")
+}
+
+func TestAssembler_SystemSectionAskUserConditional(t *testing.T) {
+	a := &Assembler{}
+
+	// Without AskUserQuestion tool
+	config := &agent.AgentConfig{
+		PromptVersion: "2.1.37",
+	}
+	result := a.Assemble(config)
+	mustNotContain(t, result, "use the AskUserQuestion to ask them")
+
+	// With AskUserQuestion tool
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "AskUserQuestion"})
+	config.ToolRegistry = reg
+	result = a.Assemble(config)
+	mustContain(t, result, "use the AskUserQuestion to ask them")
+}
+
+// --- GOAT-07c Tests: # Using your tools dynamic ---
+
+func TestAssembler_UsingYourToolsDynamic(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		PromptVersion: "2.1.37",
+	}
+
+	result := a.Assemble(config)
+
+	// Core tool preference bullets always present
+	mustContain(t, result, "# Using your tools")
+	mustContain(t, result, "Do NOT use Bash when a relevant dedicated tool is provided")
+	mustContain(t, result, "To read files use Read instead of cat/head/tail/sed")
+	mustContain(t, result, "parallel tool")
+}
+
+func TestAssembler_UsingYourToolsConditionalBullets(t *testing.T) {
+	a := &Assembler{}
+
+	// Without Agent/TodoWrite tools
+	config := &agent.AgentConfig{
+		PromptVersion: "2.1.37",
+	}
+	result := a.Assemble(config)
+	mustNotContain(t, result, "Break down and manage your work with the TodoWrite")
+	mustNotContain(t, result, "Use the Task tool with specialized agents")
+
+	// With Agent and TodoWrite tools
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "Agent"})
+	reg.Register(&stubTool{name: "TodoWrite"})
+	config.ToolRegistry = reg
+	result = a.Assemble(config)
+	mustContain(t, result, "Break down and manage your work with the TodoWrite")
+	mustContain(t, result, "Use the Task tool with specialized agents")
 }
 
 func TestInterpolate_SecurityPolicy(t *testing.T) {
@@ -393,4 +483,134 @@ func (s *stubTool) InputSchema() map[string]any                                 
 func (s *stubTool) SideEffect() tools.SideEffectType                                        { return tools.SideEffectNone }
 func (s *stubTool) Execute(_ context.Context, _ map[string]any) (tools.ToolOutput, error) {
 	return tools.ToolOutput{}, nil
+}
+
+// --- Auto-memory tests ---
+
+func TestAssembler_WithAutoMemory(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		AutoMemoryDir:     "/home/user/.claude/projects/abc123/memory",
+		AutoMemoryContent: "# Project Memory\n\nSome notes.",
+		PromptVersion:     "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	mustContain(t, result, "# auto memory")
+	mustContain(t, result, "/home/user/.claude/projects/abc123/memory")
+	mustContain(t, result, "## MEMORY.md")
+	mustContain(t, result, "# Project Memory")
+	mustContain(t, result, "Some notes.")
+}
+
+func TestAssembler_WithoutAutoMemory(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		PromptVersion: "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	mustNotContain(t, result, "# auto memory")
+	mustNotContain(t, result, "## MEMORY.md")
+}
+
+func TestAssembler_WithManagedPolicy(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		ManagedPolicyContent: "Do not access external APIs.",
+		ClaudeMDContent:      "Project instructions here.",
+		PromptVersion:        "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	mustContain(t, result, "# Managed Policy")
+	mustContain(t, result, "Do not access external APIs.")
+}
+
+func TestAssembler_ManagedPolicyBeforeClaudeMD(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		ManagedPolicyContent: "managed policy content",
+		ClaudeMDContent:      "project instructions",
+		PromptVersion:        "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	idxManaged := strings.Index(result, "# Managed Policy")
+	idxClaudeMD := strings.Index(result, "# CLAUDE.md")
+
+	if idxManaged < 0 {
+		t.Fatal("expected Managed Policy section")
+	}
+	if idxClaudeMD < 0 {
+		t.Fatal("expected CLAUDE.md section")
+	}
+	if idxManaged >= idxClaudeMD {
+		t.Error("managed policy should appear before CLAUDE.md")
+	}
+}
+
+func TestAssembler_WithUnconditionalRules(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		ProjectRules: []agent.RuleEntry{
+			{Content: "Always use gofmt."},
+		},
+		PromptVersion: "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	mustContain(t, result, "Always use gofmt.")
+}
+
+func TestAssembler_WithConditionalRulesMatching(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		ProjectRules: []agent.RuleEntry{
+			{Content: "Go formatting rule", PathPatterns: []string{"**/*.go"}},
+		},
+		ActiveFilePaths: []string{"pkg/prompt/assembler.go"},
+		PromptVersion:   "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	mustContain(t, result, "Go formatting rule")
+}
+
+func TestAssembler_WithConditionalRulesNotMatching(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		ProjectRules: []agent.RuleEntry{
+			{Content: "Go formatting rule", PathPatterns: []string{"**/*.go"}},
+		},
+		ActiveFilePaths: []string{"src/index.js"},
+		PromptVersion:   "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	mustNotContain(t, result, "Go formatting rule")
+}
+
+func TestAssembler_AutoMemoryPositionAfterAgentMemory(t *testing.T) {
+	a := &Assembler{}
+	config := &agent.AgentConfig{
+		MemoryEnabled:     true,
+		AutoMemoryDir:     "/tmp/mem",
+		AutoMemoryContent: "memory content",
+		PromptVersion:     "2.1.37",
+	}
+
+	result := a.Assemble(config)
+	idxAgentMemory := strings.Index(result, "Agent Memory")
+	idxAutoMemory := strings.Index(result, "# auto memory")
+
+	if idxAgentMemory < 0 {
+		t.Fatal("expected Agent Memory section")
+	}
+	if idxAutoMemory < 0 {
+		t.Fatal("expected auto memory section")
+	}
+	if idxAutoMemory <= idxAgentMemory {
+		t.Error("auto memory should come after agent memory instructions")
+	}
 }
