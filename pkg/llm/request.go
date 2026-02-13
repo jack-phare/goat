@@ -48,6 +48,32 @@ func BuildCompletionRequest(config ClientConfig, systemPrompt string, messages [
 		})
 	}
 
+	// Groq/Llama-specific tuning: lower temperature and explicit tool_choice
+	// improve tool-calling reliability. Groq recommends temperature 0.0-0.3 for
+	// structured output and tool_choice "auto" when tools are present.
+	// See: https://console.groq.com/docs/prompting (Parameter Tuning)
+	if IsGroqLlama(config.Model) {
+		if len(req.Tools) > 0 {
+			req.ToolChoice = "auto"
+		}
+		if req.Temperature == nil {
+			temp := 0.3
+			req.Temperature = &temp
+		}
+	}
+
+	// Local vLLM models: lower temperature and explicit tool_choice improve
+	// tool-calling reliability for open-weight models served on Modal.
+	if IsLocalModel(config.Model) {
+		if len(req.Tools) > 0 {
+			req.ToolChoice = "auto"
+		}
+		if req.Temperature == nil {
+			temp := 0.3
+			req.Temperature = &temp
+		}
+	}
+
 	// LiteLLM passthrough for Anthropic-specific fields.
 	// Only populated when there are provider-specific fields to send;
 	// standard OpenAI-compatible providers reject unknown top-level fields.

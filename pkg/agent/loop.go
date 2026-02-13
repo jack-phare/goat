@@ -150,7 +150,11 @@ func runLoop(ctx context.Context, prompt string, config *AgentConfig, state *Loo
 		// 6. Build completion request (inject pending additional context)
 		var llmTools []llm.Tool
 		if config.ToolRegistry != nil {
-			llmTools = config.ToolRegistry.LLMTools()
+			if config.CompactTools {
+				llmTools = config.ToolRegistry.CompactLLMTools()
+			} else {
+				llmTools = config.ToolRegistry.LLMTools()
+			}
 		}
 
 		effectivePrompt := systemPrompt

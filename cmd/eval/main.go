@@ -84,10 +84,19 @@ func main() {
 	config.OS = runtime.GOOS
 	config.CurrentDate = time.Now().Format("2006-01-02")
 	config.ToolRegistry = registry
-	config.Prompter = &prompt.Assembler{}
 	config.Permissions = &agent.AllowAllChecker{}
 	config.Hooks = &agent.NoOpHookRunner{}
 	config.Compactor = &agent.NoOpCompactor{}
+
+	// Groq/Llama-specific tuning: use a concise system prompt and compact tool
+	// descriptions to reduce "Failed to call a function" errors.
+	// See: thoughts/tickets/BUG-groq-tool-calling-failures.md
+	if llm.IsGroqLlama(model) {
+		config.Prompter = &agent.StaticPromptAssembler{Prompt: groqSystemPrompt}
+		config.CompactTools = true
+	} else {
+		config.Prompter = &prompt.Assembler{}
+	}
 
 	// Run with Ctrl+C support
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -144,3 +153,19 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
+
+// groqSystemPrompt is a concise system prompt (~400 tokens) optimized for Groq-hosted
+// Llama models. Groq recommends keeping system prompts to 300-600 tokens for best results.
+// This replaces the full Claude Code-style prompt (~3000+ tokens) that overwhelms Llama's
+// instruction-following capacity during tool calling.
+const groqSystemPrompt = `You are a coding assistant with access to tools for running commands and editing files.
+
+# Rules
+- Use the provided tools to complete tasks. Call tools with correct JSON arguments.
+- Use dedicated tools for file operations: Read for reading, Write for creating, Edit for modifying, Glob for finding files, Grep for searching content.
+- Use Bash only for system commands (git, npm, docker, etc.), NOT for file operations.
+- You may call multiple tools in a single response when they are independent.
+- When a tool call fails, adjust your approach rather than retrying the exact same call.
+- Read a file before editing it.
+- Prefer editing existing files over creating new ones.
+- Be concise in your responses. Focus on completing the task.`

@@ -99,12 +99,27 @@ func (r *Registry) ToolDefinitions() []llm.ToolDefinition {
 }
 
 // LLMTools returns adapters that satisfy the llm.Tool interface,
-// for use with llm.buildCompletionRequest.
+// for use with llm.BuildCompletionRequest.
 func (r *Registry) LLMTools() []llm.Tool {
 	names := r.Names()
 	adapted := make([]llm.Tool, 0, len(names))
 	for _, name := range names {
 		adapted = append(adapted, &llmToolAdapter{tool: r.tools[name]})
+	}
+	return adapted
+}
+
+// CompactLLMTools returns adapters with shortened descriptions optimized for
+// models with limited instruction-following capacity (e.g., Llama via Groq).
+// Tools that don't have a compact description fall back to the full description.
+func (r *Registry) CompactLLMTools() []llm.Tool {
+	names := r.Names()
+	adapted := make([]llm.Tool, 0, len(names))
+	for _, name := range names {
+		adapted = append(adapted, &llmToolAdapter{
+			tool:        r.tools[name],
+			compactDesc: compactDescriptions[name],
+		})
 	}
 	return adapted
 }

@@ -109,6 +109,10 @@ type AgentConfig struct {
 	// Parallel tool execution
 	MaxParallelTools int // max concurrency for side-effect-free tools (0 = default 5)
 
+	// Compact tools: use shortened tool descriptions for models with limited
+	// instruction-following capacity (e.g., Llama via Groq).
+	CompactTools bool
+
 	// Team context (set when running as a teammate)
 	TeamName  string // non-empty when part of a team
 	AgentName string // this agent's name within the team

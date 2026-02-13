@@ -32,12 +32,52 @@ model_list:
       model: groq/llama-3.3-70b-versatile
       api_key: os.environ/GROQ_API_KEY
 
-  # vLLM local model on Modal GPU (uncomment after: modal deploy scripts/modal_vllm.py)
-  # Get the URL from: modal app logs goat-vllm
+  # Groq — Llama 4 Scout (better tool calling reliability than 3.3, parallel tool use)
+  # See: https://console.groq.com/docs/tool-use/overview
+  # - model_name: llama-4-scout
+  #   litellm_params:
+  #     model: groq/meta-llama/llama-4-scout-17b-16e-instruct
+  #     api_key: os.environ/GROQ_API_KEY
+
+  # vLLM local models on Modal GPU (uncomment after deploying)
+  # Deploy with: VLLM_MODEL=<key> modal deploy scripts/modal_vllm.py --env goat
+  # Get the URL from: modal app logs goat-vllm-<key>
   # - model_name: llama-3.1-8b-local
   #   litellm_params:
   #     model: openai/meta-llama/Llama-3.1-8B-Instruct
-  #     api_base: https://WORKSPACE--goat-vllm-serve.modal.run/v1
+  #     api_base: https://WORKSPACE--goat-vllm-llama-3.1-8b-serve.modal.run/v1
+  #     api_key: "not-needed"
+
+  # - model_name: qwen3-4b-local
+  #   litellm_params:
+  #     model: openai/Qwen/Qwen3-4B-Instruct-2507
+  #     api_base: https://WORKSPACE--goat-vllm-qwen3-4b-serve.modal.run/v1
+  #     api_key: "not-needed"
+
+  # - model_name: qwen3-30b-a3b-local
+  #   litellm_params:
+  #     model: openai/Qwen/Qwen3-30B-A3B-Instruct-2507
+  #     api_base: https://WORKSPACE--goat-vllm-qwen3-30b-a3b-serve.modal.run/v1
+  #     api_key: "not-needed"
+
+  # - model_name: qwen3-235b-local
+  #   litellm_params:
+  #     model: openai/Qwen/Qwen3-235B-A22B-Instruct-2507-FP8
+  #     api_base: https://WORKSPACE--goat-vllm-qwen3-235b-serve.modal.run/v1
+  #     api_key: "not-needed"
+
+  # GPT OSS models on Modal GPU (H100)
+  # Deploy with: GPT_OSS_MODEL=<key> modal deploy scripts/modal_gpt_oss.py --env goat
+  # - model_name: gpt-oss-20b-local
+  #   litellm_params:
+  #     model: openai/openai/gpt-oss-20b
+  #     api_base: https://WORKSPACE--goat-vllm-gpt-oss-20b-serve.modal.run/v1
+  #     api_key: "not-needed"
+
+  # - model_name: gpt-oss-120b-local
+  #   litellm_params:
+  #     model: openai/openai/gpt-oss-120b
+  #     api_base: https://WORKSPACE--goat-vllm-gpt-oss-120b-serve.modal.run/v1
   #     api_key: "not-needed"
 
   # OpenAI (direct — uncomment if you have a key)

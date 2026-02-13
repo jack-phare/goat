@@ -33,6 +33,23 @@ func translateUsage(u *Usage) types.BetaUsage {
 	}
 }
 
+// IsGroqLlama returns true if the model identifier suggests a Groq-hosted or Llama/Mixtral
+// model that benefits from simplified tool schemas and lower temperature for tool calling.
+func IsGroqLlama(model string) bool {
+	m := strings.ToLower(model)
+	return strings.HasPrefix(m, "groq/") ||
+		strings.Contains(m, "llama") ||
+		strings.Contains(m, "mixtral")
+}
+
+// IsLocalModel returns true if the model is served via local vLLM on Modal.
+// Local models use the "-local" suffix convention in LiteLLM config
+// (e.g. "qwen3-4b-local", "gpt-oss-20b-local"). These models benefit from
+// lower temperature and explicit tool_choice for more reliable tool calling.
+func IsLocalModel(model string) bool {
+	return strings.HasSuffix(strings.ToLower(model), "-local")
+}
+
 // toRequestModel prepends the LiteLLM "anthropic/" prefix for bare Claude model names.
 // Models that already contain a "/" (provider-prefixed) or non-Claude models pass through as-is.
 func toRequestModel(model string) string {

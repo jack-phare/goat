@@ -50,23 +50,23 @@ func (g *GrepTool) InputSchema() map[string]any {
 				"type":        "string",
 				"description": "Output mode: content, files_with_matches, count",
 			},
-			"-i": map[string]any{
+			"case_insensitive": map[string]any{
 				"type":        "boolean",
 				"description": "Case insensitive search",
 			},
-			"-n": map[string]any{
+			"show_line_numbers": map[string]any{
 				"type":        "boolean",
 				"description": "Show line numbers (default true)",
 			},
-			"-A": map[string]any{
+			"after_context": map[string]any{
 				"type":        "number",
 				"description": "Lines to show after each match",
 			},
-			"-B": map[string]any{
+			"before_context": map[string]any{
 				"type":        "number",
 				"description": "Lines to show before each match",
 			},
-			"-C": map[string]any{
+			"context_lines": map[string]any{
 				"type":        "number",
 				"description": "Lines of context around each match",
 			},
@@ -141,6 +141,32 @@ func (g *GrepTool) Execute(ctx context.Context, input map[string]any) (ToolOutpu
 	return ToolOutput{Content: result}, nil
 }
 
+// inputBool looks up a boolean value by the new key, falling back to the legacy key.
+func inputBool(input map[string]any, key, legacyKey string) (bool, bool) {
+	if v, ok := input[key].(bool); ok {
+		return v, true
+	}
+	if legacyKey != "" {
+		if v, ok := input[legacyKey].(bool); ok {
+			return v, true
+		}
+	}
+	return false, false
+}
+
+// inputFloat looks up a numeric value by the new key, falling back to the legacy key.
+func inputFloat(input map[string]any, key, legacyKey string) (float64, bool) {
+	if v, ok := input[key].(float64); ok {
+		return v, true
+	}
+	if legacyKey != "" {
+		if v, ok := input[legacyKey].(float64); ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
 func (g *GrepTool) buildArgs(input map[string]any, pattern string) []string {
 	var args []string
 
@@ -158,7 +184,7 @@ func (g *GrepTool) buildArgs(input map[string]any, pattern string) []string {
 	case "content":
 		// Default rg behavior — show matching lines
 		showLineNumbers := true
-		if n, ok := input["-n"].(bool); ok {
+		if n, ok := inputBool(input, "show_line_numbers", "-n"); ok {
 			showLineNumbers = n
 		}
 		if showLineNumbers {
@@ -166,19 +192,19 @@ func (g *GrepTool) buildArgs(input map[string]any, pattern string) []string {
 		}
 	}
 
-	// Case insensitive
-	if ci, ok := input["-i"].(bool); ok && ci {
+	// Case insensitive (new: case_insensitive, legacy: -i)
+	if ci, ok := inputBool(input, "case_insensitive", "-i"); ok && ci {
 		args = append(args, "--ignore-case")
 	}
 
-	// Context lines
-	if a, ok := input["-A"].(float64); ok && a > 0 {
+	// Context lines (new: after_context/before_context/context_lines, legacy: -A/-B/-C)
+	if a, ok := inputFloat(input, "after_context", "-A"); ok && a > 0 {
 		args = append(args, "-A", strconv.Itoa(int(a)))
 	}
-	if b, ok := input["-B"].(float64); ok && b > 0 {
+	if b, ok := inputFloat(input, "before_context", "-B"); ok && b > 0 {
 		args = append(args, "-B", strconv.Itoa(int(b)))
 	}
-	if c, ok := input["-C"].(float64); ok && c > 0 {
+	if c, ok := inputFloat(input, "context_lines", "-C"); ok && c > 0 {
 		args = append(args, "-C", strconv.Itoa(int(c)))
 	}
 

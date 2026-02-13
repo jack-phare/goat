@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-02-13 — Groq Tool-Calling Fix
+
+Addressed `GroqException - Failed to call a function` errors that caused 10-16x slowdown on Groq/Llama benchmarks via LiteLLM mid-stream retries.
+
+### Fixes
+
+- **Model-aware request tuning**: Auto-detect Groq/Llama models via `IsGroqLlama()` and set `temperature: 0.3` + `tool_choice: "auto"` per Groq best practices (`pkg/llm/translate.go`, `pkg/llm/request.go`, `pkg/llm/types_wire.go`).
+- **Renamed GrepTool parameters**: `-i` → `case_insensitive`, `-A` → `after_context`, `-B` → `before_context`, `-C` → `context_lines`, `-n` → `show_line_numbers`. Old names still work via fallback lookup (`pkg/tools/grep.go`).
+- **Compact tool descriptions**: Added `CompactLLMTools()` returning 1-2 sentence descriptions instead of 40+ line verbose ones. Activated via `AgentConfig.CompactTools` (`pkg/tools/adapter.go`, `pkg/tools/registry.go`, `pkg/agent/config.go`).
+- **Groq-optimized system prompt**: ~150 token focused prompt replaces ~3000+ token Claude Code assembler for Groq models in eval binary (`cmd/eval/main.go`).
+- **Llama 4 Scout config**: Added commented-out `llama-4-scout` model with better tool calling support (`dev/litellm-config.yaml`).
+
+### Verified
+
+- Groq API (llama-3.3-70b + llama-4-scout) returns clean tool calls via curl and standalone Go SSE tests.
+- All unit tests pass (pkg/llm, pkg/agent, pkg/tools), including backwards-compat for old GrepTool param names.
+
+### Known Issue (pre-existing, separate bug)
+
+- `cmd/example/` binary hangs when using direct Groq API with tools enabled. Root cause: `http.DefaultClient` has no body-read timeout, so `bufio.Scanner.Scan()` in `ParseSSEStream` blocks indefinitely if Groq's SSE connection stalls. Does NOT affect the eval binary (routes through LiteLLM which has its own retry/timeout logic).
+
+---
+
 ## 2026-02-13 — Modal Infrastructure Complete + Cross-Model Benchmarks
 
 Full Modal eval infrastructure deployed and validated with 5/5 pass rate across all 5 models.

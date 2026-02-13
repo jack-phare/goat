@@ -5,6 +5,7 @@ type CompletionRequest struct {
 	Model         string           `json:"model"`
 	Messages      []ChatMessage    `json:"messages"`
 	Tools         []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice    any              `json:"tool_choice,omitempty"` // "auto" | "none" | {"type":"function","function":{"name":"..."}}
 	Stream        bool             `json:"stream"`
 	MaxTokens     int              `json:"max_tokens,omitempty"`
 	Temperature   *float64         `json:"temperature,omitempty"`
