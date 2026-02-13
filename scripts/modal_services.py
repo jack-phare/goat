@@ -242,25 +242,46 @@ def litellm():
     if lf_sec:
         os.environ["LANGFUSE_SECRET_KEY"] = lf_sec
 
-    # Point Langfuse client at the internal Langfuse service
-    langfuse_host = "http://goat-services-langfuse.modal.internal:3000"
-    os.environ["LANGFUSE_HOST"] = langfuse_host
+    # Point Langfuse client at the internal Langfuse service.
+    # Modal's internal proxy routes to @modal.web_server on port 80, not the
+    # container's internal port (3000).  Also try the public URL as fallback.
+    langfuse_internal = "http://goat-services-langfuse.modal.internal"
+    langfuse_public = ""
+    try:
+        _lf_fn = modal.Function.from_name(
+            "goat-services", "langfuse", environment_name="goat"
+        )
+        langfuse_public = _lf_fn.get_web_url() or ""
+    except Exception:
+        pass
 
-    # Wait for Langfuse to be ready before starting the proxy so the first
-    # callbacks don't hit a still-migrating instance (BUG-langfuse-callback-errors).
-    print(f"  Waiting for Langfuse at {langfuse_host} ...")
-    for i in range(90):
-        try:
-            req = urllib.request.Request(f"{langfuse_host}/api/public/health")
-            resp = urllib.request.urlopen(req, timeout=3)
-            if resp.status == 200:
-                print(f"  Langfuse ready ({i + 1}s)")
-                break
-        except Exception:
-            pass
-        time.sleep(1)
+    # Wait for Langfuse to be ready -- try internal URL first, fall back to public
+    langfuse_host = ""
+    print(f"  Waiting for Langfuse ...")
+    for candidate in [langfuse_internal, langfuse_public]:
+        if not candidate:
+            continue
+        print(f"    Trying {candidate} ...")
+        for i in range(45):
+            try:
+                req = urllib.request.Request(f"{candidate}/api/public/health")
+                resp = urllib.request.urlopen(req, timeout=3)
+                if resp.status == 200:
+                    langfuse_host = candidate
+                    print(f"  Langfuse ready at {candidate} ({i + 1}s)")
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        if langfuse_host:
+            break
     else:
-        print("  Warning: Langfuse not ready after 90s, starting LiteLLM anyway")
+        # Last resort: use the public URL even if health check didn't pass
+        langfuse_host = langfuse_public or langfuse_internal
+        print(f"  Warning: Langfuse not confirmed ready, using {langfuse_host}")
+
+    os.environ["LANGFUSE_HOST"] = langfuse_host
+    print(f"  LANGFUSE_HOST={langfuse_host}")
 
     providers = [k for k in ["AZURE_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] if os.environ.get(k)]
     print(f"LiteLLM starting (stateless, no DB)")
@@ -297,22 +318,28 @@ def langfuse_query(sql: str = "", dump: bool = False) -> str:
     if not os.path.exists(os.path.join(pg_data, "PG_VERSION")):
         return "ERROR: Postgres data dir not found on volume. Deploy Langfuse first."
 
+    # Remove stale PID file left by the main Langfuse container's running
+    # Postgres -- the volume snapshot includes it but the process isn't here.
+    pid_file = os.path.join(pg_data, "postmaster.pid")
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
+
     # Ensure /run/postgresql exists
     os.makedirs("/run/postgresql", exist_ok=True)
     subprocess.run(["chown", "-R", "postgres:postgres", "/run/postgresql"], check=False)
 
-    # Start Postgres
+    # Start Postgres on a non-conflicting port
     subprocess.run(
         ["su-exec", "postgres", "pg_ctl", "start",
          "-D", pg_data, "-l", "/tmp/pg.log",
-         "-w", "-o", "-p 5432"],
+         "-w", "-o", "-p 5433"],
         check=True,
     )
 
     # Wait for ready
     for _ in range(15):
         r = subprocess.run(
-            ["su-exec", "postgres", "pg_isready", "-p", "5432"],
+            ["su-exec", "postgres", "pg_isready", "-p", "5433"],
             capture_output=True,
         )
         if r.returncode == 0:
@@ -322,14 +349,14 @@ def langfuse_query(sql: str = "", dump: bool = False) -> str:
     try:
         if dump:
             r = subprocess.run(
-                ["su-exec", "postgres", "pg_dump", "-p", "5432",
+                ["su-exec", "postgres", "pg_dump", "-p", "5433",
                  "-U", pg_user, "-d", "langfuse", "--no-owner", "--no-acl"],
                 capture_output=True, text=True, timeout=120,
             )
             return r.stdout if r.returncode == 0 else f"pg_dump error: {r.stderr}"
         else:
             r = subprocess.run(
-                ["su-exec", "postgres", "psql", "-p", "5432",
+                ["su-exec", "postgres", "psql", "-p", "5433",
                  "-U", pg_user, "-d", "langfuse",
                  "-c", sql],
                 capture_output=True, text=True, timeout=30,

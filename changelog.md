@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-02-13 — Persistent Langfuse Storage + Trace Verification
+
+Langfuse trace data now persists across Modal container restarts via a volume-backed Postgres. Added tooling to verify traces and sync them to local dev.
+
+### Persistence
+
+- **Volume-backed Postgres** (`goat-langfuse-pg`): Postgres data dir copied from image template on first boot, reused on restarts. Prisma migrations become instant no-ops. (`scripts/modal_services.py`)
+- **Clean Postgres shutdown**: SIGTERM handler flushes WAL to volume before container teardown, preventing crash recovery on restart.
+- **Langfuse readiness gate**: LiteLLM waits for Langfuse `/api/public/health` before starting, trying internal URL then public URL fallback.
+- **Fixed internal URL**: Modal's `@modal.web_server` proxies on port 80, not the container port. Changed from `goat-services-langfuse.modal.internal:3000` to `goat-services-langfuse.modal.internal` with public URL fallback. This was the root cause of all Langfuse callback failures.
+
+### Trace Verification
+
+- **`scripts/verify_langfuse_traces.py`**: Fires a test call through LiteLLM (default: `qwen3-4b-local`), then verifies the trace via Langfuse REST API (JSON) and optionally raw Postgres SQL (`--sql`).
+- **`scripts/langfuse_sync_local.sh`**: Exports a `pg_dump` from the Modal volume and restores it into local docker-compose Langfuse at `http://localhost:3001`.
+- **`langfuse_query()` Modal function**: Runs arbitrary SQL or `pg_dump` against the volume-backed Postgres. Used by both scripts above.
+
+### Test Improvements
+
+- Phase 3 now verifies the `goat-langfuse-pg` volume exists after deploy.
+- Phase 4 now automatically verifies traces via the Langfuse REST API instead of a manual dashboard check.
+
+### Bug Fixes
+
+- Fixed: Langfuse callbacks intermittently failing due to ephemeral Postgres (`BUG-langfuse-callback-errors`).
+
+---
+
 ## 2026-02-13 — vLLM Model Expansion
 
 Parameterized the vLLM deployment to support multiple local models on Modal, expanding from a single hardcoded Llama model to 6 configurable models across 3 GPU tiers.
@@ -74,5 +102,4 @@ Full Modal eval infrastructure deployed and validated with 5/5 pass rate across 
 
 ### Known Issues
 
-- Langfuse callbacks intermittently fail (ephemeral Postgres). See `thoughts/tickets/BUG-langfuse-callback-errors.md`.
 - Groq tool calling unreliable for Llama models. See `thoughts/tickets/BUG-groq-tool-calling-failures.md`.

@@ -17,7 +17,10 @@ RUN apk add --no-cache \
 # Install prisma CLI globally (needed for migrations)
 RUN npm install -g prisma@5.22.0
 
-# Pre-initialize the Postgres data directory (avoid runtime permission issues)
+# Pre-initialize the Postgres data directory as a template.
+# At runtime this is copied to a persistent Modal Volume on first boot
+# (see langfuse_pg_volume in modal_services.py). Subsequent restarts reuse
+# the volume data, making Prisma migrations a fast no-op.
 ENV PGDATA=/var/lib/postgresql/data
 RUN mkdir -p ${PGDATA} /run/postgresql \
     && chown -R postgres:postgres ${PGDATA} /run/postgresql \

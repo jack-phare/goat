@@ -106,8 +106,11 @@ python scripts/modal_results.py <run_id> --full
 | `model_registry.py` | Reference doc for all model configs (HF IDs, GPUs, vLLM settings) |
 | `modal_sandbox.py` | Run goat-eval in isolated per-task sandboxes |
 | `modal_results.py` | View benchmark results from Modal volume |
+| `verify_langfuse_traces.py` | Verify Langfuse traces via REST API + raw Postgres SQL |
+| `langfuse_sync_local.sh` | Sync Modal Langfuse data to local docker-compose |
 | `build_eval.sh` | Cross-compile goat-eval binary for Linux |
 | `run_cross_model_modal.sh` | Run smoke benchmark across multiple models |
+| `test_modal_infra.sh` | 6-phase infrastructure validation (secrets, deploy, health, traces) |
 
 ## Modal Secrets
 
@@ -124,7 +127,7 @@ Created by `modal_setup.py` in the `goat` environment:
 
 | Volume | Purpose |
 |--------|---------|
-| `goat-pgdata` | Postgres data persistence |
+| `goat-langfuse-pg` | Langfuse Postgres data persistence (survives restarts) |
 | `goat-results` | Benchmark results |
 | `goat-model-cache` | HuggingFace model weights for vLLM |
 | `goat-vllm-cache` | vLLM compilation cache |
@@ -170,6 +173,56 @@ Default credentials (set in `goat-langfuse` secret):
 - Email: `admin@goat.local`
 - Password: (shown during setup)
 
+## Langfuse Trace Verification
+
+### Verify traces are landing
+
+```bash
+# Fire a test call and verify traces via Langfuse REST API
+uv run --with modal,requests python scripts/verify_langfuse_traces.py
+
+# Use a different model
+uv run --with modal,requests python scripts/verify_langfuse_traces.py --model llama-3.1-8b-local
+
+# Skip test call, just query existing traces
+uv run --with modal,requests python scripts/verify_langfuse_traces.py --query-only
+
+# Also show raw Postgres SQL output
+uv run --with modal,requests python scripts/verify_langfuse_traces.py --sql
+```
+
+### Sync traces to local Langfuse
+
+Pull all trace data from the Modal volume into local docker-compose for debugging:
+
+```bash
+# Full sync: dump from Modal, restore into local Postgres, restart Langfuse
+bash scripts/langfuse_sync_local.sh
+
+# Just download the dump file
+bash scripts/langfuse_sync_local.sh --dump-only
+
+# Sync and open the browser
+bash scripts/langfuse_sync_local.sh --open
+```
+
+After syncing, view traces at http://localhost:3001 (login: `admin@goat.local` / `admin1234`).
+
+### Query Postgres directly
+
+The `langfuse_query()` Modal function runs arbitrary SQL against the volume-backed Postgres:
+
+```python
+import modal
+fn = modal.Function.from_name("goat-services", "langfuse_query", environment_name="goat")
+
+# Run SQL
+print(fn.remote(sql="SELECT count(*) FROM traces;"))
+
+# Export full database
+dump = fn.remote(dump=True)
+```
+
 ## Troubleshooting
 
 **"Secret not found" errors**: Run `python scripts/modal_setup.py` to create secrets.
@@ -177,5 +230,7 @@ Default credentials (set in `goat-langfuse` secret):
 **LiteLLM not discoverable**: Make sure services are deployed: `modal deploy scripts/modal_services.py`
 
 **vLLM cold start slow**: First request after idle takes ~60-90s to load model weights. Subsequent requests are fast.
+
+**Langfuse traces missing**: Run `uv run --with modal,requests python scripts/verify_langfuse_traces.py --sql` to check if traces are landing. If the Postgres volume is empty, redeploy services: `modal deploy scripts/modal_services.py --env goat`.
 
 **Binary not found**: Run `bash scripts/build_eval.sh` to build the eval binary.

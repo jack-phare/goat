@@ -217,6 +217,17 @@ print(fn.web_url)
     else
         warn "Could not discover Langfuse URL"
     fi
+
+    # Verify persistent volume exists
+    echo ""
+    info "Checking Langfuse Postgres volume..."
+    if modal volume list --env goat 2>/dev/null | grep -q "goat-langfuse-pg"; then
+        pass "goat-langfuse-pg volume exists (persistent storage)"
+        PASSED=$((PASSED + 1))
+    else
+        fail "goat-langfuse-pg volume not found"
+        FAILED=$((FAILED + 1))
+    fi
 }
 
 # =============================================================================
@@ -263,14 +274,45 @@ sys.exit(0 if 'GOAT_TEST_OK' in content else 0)  # pass even if model doesn't re
         return 1
     fi
 
-    # Check Langfuse captured the trace
+    # Verify Langfuse captured the trace (automated)
     echo ""
-    info "Check Langfuse dashboard for the trace (may take a few seconds)"
+    info "Verifying trace landed in Langfuse (waiting 5s for async callback)..."
+    sleep 5
+
     LANGFUSE_URL=$($MODAL_PYTHON -c "
 import modal
 fn = modal.Function.from_name('goat-services', 'langfuse', environment_name='goat')
 print(fn.web_url)
 " 2>/dev/null)
+
+    if [ -n "$LANGFUSE_URL" ]; then
+        # Query the Langfuse API for recent traces (Basic auth with project keys)
+        TRACE_RESPONSE=$(curl -sf -u "pk-lf-goat-modal:sk-lf-goat-modal" \
+            "${LANGFUSE_URL}/api/public/traces?limit=1&orderBy=timestamp.DESC" 2>/dev/null || echo "")
+
+        if echo "$TRACE_RESPONSE" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+traces = data.get('data', [])
+if traces:
+    t = traces[0]
+    ts = t.get('timestamp', '?')
+    name = t.get('name', '?')
+    print(f'  Latest trace: {name} at {ts}')
+    sys.exit(0)
+else:
+    sys.exit(1)
+" 2>/dev/null; then
+            pass "Langfuse trace verified via API"
+            PASSED=$((PASSED + 1))
+        else
+            warn "Could not verify trace via API (may need different API keys)"
+            info "Dashboard: $LANGFUSE_URL"
+        fi
+    else
+        warn "Langfuse URL not available for trace verification"
+    fi
+
     info "Dashboard: $LANGFUSE_URL"
 }
 

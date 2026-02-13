@@ -285,6 +285,12 @@ The dev stack includes:
 
 All LLM calls through the proxy are automatically traced in Langfuse with cost, latency, token counts, and full input/output.
 
+To pull traces from the Modal cloud deployment into your local Langfuse for analysis:
+
+```bash
+bash scripts/langfuse_sync_local.sh
+```
+
 The example's `-provider litellm` checks env vars in order: `EXECUTOR_LITELLM_KEY` (production), `LITELLM_MASTER_KEY` (dev), `LITELLM_API_KEY` (generic).
 
 ## 6. Multi-Turn Conversation
