@@ -1,0 +1,7 @@
+[
+  {"id": "math-simple", "prompt": "What is 17 * 23? Show your work.", "max_turns": 3},
+  {"id": "file-create", "prompt": "Create a file called hello.py that prints 'Hello, World!'", "max_turns": 5},
+  {"id": "bash-command", "prompt": "List all files in the current directory and count them", "max_turns": 3},
+  {"id": "code-fix", "prompt": "Create a Python file with a deliberate bug, then fix it", "max_turns": 8},
+  {"id": "grep-search", "prompt": "Create 3 text files with different content, then use grep to find which one contains the word 'goat'", "max_turns": 8}
+]

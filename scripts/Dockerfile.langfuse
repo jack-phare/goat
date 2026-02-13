@@ -1,0 +1,32 @@
+# Multi-stage: copy the built Langfuse v2 app into a Python+Node.js+Postgres Alpine image
+# so Modal can inject its runtime (requires Python).
+# IMPORTANT: Must use Alpine base to match Langfuse's Prisma binary target (linux-musl-openssl-3.0.x).
+# Postgres is co-located because Modal proxies HTTP only (not raw TCP), so Postgres
+# must be on localhost, not a separate Modal function.
+FROM ghcr.io/langfuse/langfuse:2 AS langfuse-src
+
+FROM python:3.12-alpine
+
+# Install Node.js, OpenSSL (for Prisma), Postgres, and dumb-init
+RUN apk add --no-cache \
+    nodejs npm dumb-init \
+    openssl openssl-dev \
+    postgresql16 postgresql16-contrib \
+    su-exec
+
+# Install prisma CLI globally (needed for migrations)
+RUN npm install -g prisma@5.22.0
+
+# Pre-initialize the Postgres data directory (avoid runtime permission issues)
+ENV PGDATA=/var/lib/postgresql/data
+RUN mkdir -p ${PGDATA} /run/postgresql \
+    && chown -R postgres:postgres ${PGDATA} /run/postgresql \
+    && su-exec postgres initdb -D ${PGDATA} \
+    && echo "host all all 127.0.0.1/32 md5" >> ${PGDATA}/pg_hba.conf \
+    && echo "listen_addresses = '127.0.0.1'" >> ${PGDATA}/postgresql.conf
+
+# Copy the entire Langfuse app from the official image
+COPY --from=langfuse-src /app /app
+
+WORKDIR /app
+EXPOSE 3000

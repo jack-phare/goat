@@ -18,7 +18,7 @@ import sys
 
 import modal
 
-MODAL_ENVIRONMENT = "agent-dev"
+MODAL_ENVIRONMENT = "goat"
 
 
 def get_volume():

@@ -1,144 +1,153 @@
-# Goat Modal Sandbox
+# Goat Modal Infrastructure
 
-Run Goat's eval binary in isolated [Modal](https://modal.com) containers. The sandbox provides safe tool execution — Bash commands and file operations run inside the container, not on your host machine.
+Run Goat benchmarks on Modal's cloud with LiteLLM routing, Langfuse observability,
+and optional local GPU model serving via vLLM.
+
+## Architecture
 
 ```
-Host (macOS/Linux)          Modal Sandbox (Debian)        LLM Provider
-┌─────────────────┐        ┌───────────────────────┐     ┌──────────────┐
-│ modal_sandbox.py │──────▶│ /opt/goat-eval        │────▶│ Azure/OpenAI │
-│                  │  SSH   │ bash, git, ripgrep    │ API │              │
-│ (cross-compiled  │  ───▶ │ /workspace (CWD)      │────▶│              │
-│  binary upload)  │       │ /results (Volume)      │     │              │
-└─────────────────┘        └───────────────────────┘     └──────────────┘
+Your Machine                     Modal Cloud (goat environment)
+─────────────                    ─────────────────────────────────
+                                 ┌─────────────────────────────┐
+modal_sandbox.py ──Modal SDK──▶  │  Sandbox (per task, CPU)    │
+                                 │  goat-eval binary           │
+                                 │  Bash/Read/Write/Edit/Glob/ │
+                                 │  Grep tools                 │
+                                 └─────────┬──────────────────┘
+                                           │ OPENAI_BASE_URL
+                                           ▼
+                                 ┌─────────────────────────────┐
+                                 │  LiteLLM Proxy (port 4000)  │
+                                 │  Routes to:                 │
+                                 │   - Azure (gpt-5-nano/mini) │
+                                 │   - Groq (llama-3.3-70b)    │
+                                 │   - vLLM local (see below)  │
+                                 └────┬──────────┬────────────┘
+                                      │          │
+                                      ▼          ▼
+                                 ┌──────────┐ ┌────────────────┐
+                                 │ Langfuse │ │ vLLM (GPU:A10G)│
+                                 │ (traces) │ │ Llama-3.1-8B   │
+                                 └────┬─────┘ └────────────────┘
+                                      ▼
+                                 ┌──────────┐
+                                 │ Postgres  │
+                                 └──────────┘
 ```
 
-## Prerequisites
+## Quick Start
 
-- [Go](https://golang.org) (for building the eval binary)
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [Modal](https://modal.com) account
-
-## One-Time Setup
-
-### 1. Install Modal CLI
+### 1. Install Modal
 
 ```bash
 uv tool install modal
-modal setup  # Opens browser to authenticate
+modal setup
 ```
 
-### 2. Create Modal Secret
-
-Create a secret in the `agent-dev` environment with your LLM provider credentials:
+### 2. Set Up Environment and Secrets
 
 ```bash
-modal secret create -e agent-dev goat-llm-secret \
-    OPENAI_BASE_URL=https://your-endpoint.openai.azure.com \
-    OPENAI_API_KEY=your-api-key \
-    EVAL_MODEL=gpt-5-nano
+# Interactive setup -- reads from .env, prompts for confirmation
+python scripts/modal_setup.py
+
+# Or dry-run first to see what will be created
+python scripts/modal_setup.py --dry-run
 ```
 
-The secret must contain:
-- `OPENAI_BASE_URL` — Your LLM endpoint (Azure OpenAI, OpenAI API, etc.)
-- `OPENAI_API_KEY` — API key for the endpoint
-- `EVAL_MODEL` — Default model ID (can be overridden with `--model`)
+### 3. Deploy Services
 
-### 3. Build the Eval Binary
+```bash
+# Deploy Postgres + Langfuse + LiteLLM
+modal deploy scripts/modal_services.py
 
-Cross-compile for Linux/amd64 (Modal's target architecture):
+# (Optional) Deploy vLLM local model server
+modal deploy scripts/modal_vllm.py
+```
+
+### 4. Build the Eval Binary
 
 ```bash
 bash scripts/build_eval.sh
 ```
 
-This produces `scripts/goat-eval-linux` (a statically linked ELF binary, ~50MB). Rebuild whenever you change `cmd/eval/` or its dependencies.
-
-## Usage
-
-### Single Prompt
+### 5. Run Benchmarks
 
 ```bash
-# Simple question
-uv run --with modal python scripts/modal_sandbox.py --prompt "What is 2+2?"
+# Single prompt
+python scripts/modal_sandbox.py --prompt "Write a Python function that reverses a string"
 
-# Tool use with more turns
-uv run --with modal python scripts/modal_sandbox.py \
-    --prompt "Create a hello.py that prints hello world" \
-    --max-turns 10
+# With specific model
+python scripts/modal_sandbox.py --prompt "Write fizzbuzz" --model gpt-5-mini
 
-# Override model
-uv run --with modal python scripts/modal_sandbox.py \
-    --prompt "Explain Go interfaces" \
-    --model gpt-5-mini
+# Use local model (after deploying vLLM)
+python scripts/modal_sandbox.py --prompt "Hello" --model llama-3.1-8b-local
+
+# Batch mode with 4 parallel sandboxes
+python scripts/modal_sandbox.py --batch prompts.json --parallel 4
+
+# View results
+python scripts/modal_results.py
+python scripts/modal_results.py <run_id> --full
 ```
 
-### Batch Mode
+## Scripts
 
-Create a JSON file with your prompts:
+| Script | Purpose |
+|--------|---------|
+| `modal_setup.py` | Interactive environment + secrets creation |
+| `modal_services.py` | Deploy Postgres, Langfuse, LiteLLM as Modal Functions |
+| `modal_vllm.py` | Deploy vLLM GPU model server (Llama-3.1-8B on A10G) |
+| `modal_sandbox.py` | Run goat-eval in isolated per-task sandboxes |
+| `modal_results.py` | View benchmark results from Modal volume |
+| `build_eval.sh` | Cross-compile goat-eval binary for Linux |
 
-```json
-[
-  {"id": "simple-math", "prompt": "What is 2+2?", "max_turns": 3},
-  {"id": "file-create", "prompt": "Create hello.py that prints hello world", "max_turns": 10},
-  {"id": "grep-find", "prompt": "Find all .go files containing 'func main'", "max_turns": 5}
-]
-```
+## Modal Secrets
 
-Run the batch:
+Created by `modal_setup.py` in the `goat` environment:
+
+| Secret | Contents |
+|--------|----------|
+| `goat-llm-providers` | Azure, Groq, OpenAI, Anthropic API keys |
+| `goat-litellm` | LiteLLM master key |
+| `goat-langfuse` | Langfuse auto-provision config |
+| `goat-postgres` | Postgres credentials |
+
+## Modal Volumes
+
+| Volume | Purpose |
+|--------|---------|
+| `goat-pgdata` | Postgres data persistence |
+| `goat-results` | Benchmark results |
+| `goat-model-cache` | HuggingFace model weights for vLLM |
+
+## Models Available Through LiteLLM
+
+| Model Name | Provider | Notes |
+|------------|----------|-------|
+| `gpt-5-nano` | Azure OpenAI | Cheapest, good for testing |
+| `gpt-5-mini` | Azure OpenAI | Better quality |
+| `gpt-4o-mini` | Azure OpenAI | Previous gen |
+| `llama-3.3-70b` | Groq | Fast open-weight |
+| `llama-3.1-8b-local` | vLLM on Modal GPU | Requires modal_vllm.py deployed |
+
+## Langfuse Dashboard
+
+After deploying, access Langfuse at the URL shown in Modal logs:
 
 ```bash
-uv run --with modal python scripts/modal_sandbox.py --batch prompts.json
+modal app logs goat-services
 ```
 
-Each task result is saved to the Modal Volume as JSON with output, exit code, stderr, and timing.
-
-### Viewing Results
-
-```bash
-# List all runs
-uv run --with modal python scripts/modal_results.py
-
-# View a specific run
-uv run --with modal python scripts/modal_results.py 20260209_143000
-
-# Full output (no truncation)
-uv run --with modal python scripts/modal_results.py 20260209_143000 --full
-```
-
-## CLI Reference
-
-### `modal_sandbox.py`
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--prompt` | (required\*) | Single prompt to run |
-| `--batch` | (required\*) | Path to JSON batch file |
-| `--model` | from secret | Override EVAL_MODEL |
-| `--max-turns` | 10 | Max agentic loop turns |
-| `--timeout` | 600 | Sandbox timeout (seconds) |
-
-\* One of `--prompt` or `--batch` is required.
-
-### `modal_results.py`
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `run_id` | (optional) | Run ID to view (omit to list all) |
-| `--full` | false | Show complete output |
+Default credentials (set in `goat-langfuse` secret):
+- Email: `admin@goat.local`
+- Password: (shown during setup)
 
 ## Troubleshooting
 
-### "goat-eval-linux not found"
-Run `bash scripts/build_eval.sh` to compile the binary.
+**"Secret not found" errors**: Run `python scripts/modal_setup.py` to create secrets.
 
-### "Secret not found"
-Create the Modal secret: `modal secret create -e agent-dev goat-llm-secret ...` (see setup above).
+**LiteLLM not discoverable**: Make sure services are deployed: `modal deploy scripts/modal_services.py`
 
-### Sandbox timeout
-Increase with `--timeout 1200` (seconds). Default is 600s (10 minutes).
+**vLLM cold start slow**: First request after idle takes ~60-90s to load model weights. Subsequent requests are fast.
 
-### Binary not executable / wrong architecture
-Ensure you're cross-compiling with `CGO_ENABLED=0 GOOS=linux GOARCH=amd64`. The build script handles this automatically.
-
-### Network errors from sandbox
-Modal sandboxes have outbound internet access by default. Verify your `OPENAI_BASE_URL` is reachable from Modal's infrastructure (not `localhost` or private network).
+**Binary not found**: Run `bash scripts/build_eval.sh` to build the eval binary.
