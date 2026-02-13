@@ -16,8 +16,11 @@ View Langfuse UI:
     Open https://<workspace>--goat-services-langfuse.modal.run
 """
 
-import subprocess
+import atexit
 import os
+import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -147,6 +150,19 @@ def langfuse():
         )
     print(f"  Postgres ready (localhost:5432, user={pg_user})")
 
+    # ── Register clean shutdown so Postgres flushes WAL to the volume ──
+    def _stop_postgres():
+        print("Stopping Postgres (clean shutdown)...")
+        subprocess.run(
+            ["su-exec", "postgres", "pg_ctl", "stop",
+             "-D", pg_data, "-m", "fast"],
+            timeout=30, check=False,
+        )
+
+    atexit.register(_stop_postgres)
+    # Convert SIGTERM → SystemExit so atexit handlers run on Modal teardown
+    signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(0))
+
     # ── Configure Langfuse env vars ──
     database_url = f"postgresql://{pg_user}:{pg_pass}@127.0.0.1:5432/langfuse"
 
@@ -257,3 +273,71 @@ def litellm():
         "--host", "0.0.0.0",
         "--port", "4000",
     ])
+
+
+# ---------------------------------------------------------------------------
+# Langfuse Postgres query helper (for trace verification & pg_dump)
+# ---------------------------------------------------------------------------
+@app.function(
+    image=langfuse_image,
+    secrets=[postgres_secret],
+    volumes={"/pgdata": langfuse_pg_volume},
+    timeout=2 * MINUTES,
+)
+def langfuse_query(sql: str = "", dump: bool = False) -> str:
+    """Run a read-only SQL query or pg_dump against the Langfuse Postgres volume.
+
+    Args:
+        sql:  SQL string to execute (ignored if dump=True).
+        dump: If True, run pg_dump and return the full SQL dump.
+    """
+    pg_user = os.environ.get("POSTGRES_USER", "goat")
+    pg_data = "/pgdata/data"
+
+    if not os.path.exists(os.path.join(pg_data, "PG_VERSION")):
+        return "ERROR: Postgres data dir not found on volume. Deploy Langfuse first."
+
+    # Ensure /run/postgresql exists
+    os.makedirs("/run/postgresql", exist_ok=True)
+    subprocess.run(["chown", "-R", "postgres:postgres", "/run/postgresql"], check=False)
+
+    # Start Postgres
+    subprocess.run(
+        ["su-exec", "postgres", "pg_ctl", "start",
+         "-D", pg_data, "-l", "/tmp/pg.log",
+         "-w", "-o", "-p 5432"],
+        check=True,
+    )
+
+    # Wait for ready
+    for _ in range(15):
+        r = subprocess.run(
+            ["su-exec", "postgres", "pg_isready", "-p", "5432"],
+            capture_output=True,
+        )
+        if r.returncode == 0:
+            break
+        time.sleep(1)
+
+    try:
+        if dump:
+            r = subprocess.run(
+                ["su-exec", "postgres", "pg_dump", "-p", "5432",
+                 "-U", pg_user, "-d", "langfuse", "--no-owner", "--no-acl"],
+                capture_output=True, text=True, timeout=120,
+            )
+            return r.stdout if r.returncode == 0 else f"pg_dump error: {r.stderr}"
+        else:
+            r = subprocess.run(
+                ["su-exec", "postgres", "psql", "-p", "5432",
+                 "-U", pg_user, "-d", "langfuse",
+                 "-c", sql],
+                capture_output=True, text=True, timeout=30,
+            )
+            return r.stdout if r.returncode == 0 else f"psql error: {r.stderr}"
+    finally:
+        subprocess.run(
+            ["su-exec", "postgres", "pg_ctl", "stop",
+             "-D", pg_data, "-m", "fast"],
+            timeout=30, check=False,
+        )

@@ -22,6 +22,7 @@ a Go port of Claude Code's agentic loop.
 | 12 | [transport-layer](12-transport-layer.md) | `pkg/transport/` | 4 transports (Channel/Stdio/WS/SSE), Router, ProcessAdapter |
 | 13 | [sdk-types](13-sdk-types.md) | `pkg/types/` | Message hierarchy, content blocks, enums, type system |
 | 14 | [end-to-end-request](14-end-to-end-request.md) | **Cross-cutting** | Complete trace of a single request through all components |
+| 15 | [provider-setup](15-provider-setup.md) | `cmd/example/` | Provider resolution, API key lookup, LiteLLM routing, env setup |
 
 ## Reading Order
 

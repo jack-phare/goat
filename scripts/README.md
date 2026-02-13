@@ -25,13 +25,13 @@ modal_sandbox.py ──Modal SDK──▶  │  Sandbox (per task, CPU)    │
                                  └────┬──────────┬────────────┘
                                       │          │
                                       ▼          ▼
-                                 ┌──────────┐ ┌────────────────┐
-                                 │ Langfuse │ │ vLLM (GPU:A10G)│
-                                 │ (traces) │ │ Llama-3.1-8B   │
-                                 └────┬─────┘ └────────────────┘
-                                      ▼
-                                 ┌──────────┐
-                                 │ Postgres  │
+                                 ┌──────────┐ ┌────────────────────────┐
+                                 │ Langfuse │ │ vLLM (per-model apps)  │
+                                 │ (traces) │ │ goat-vllm-llama-3-1-8b │
+                                 └────┬─────┘ │ goat-vllm-qwen3-4b    │
+                                      ▼       │ goat-vllm-gpt-oss-20b │
+                                 ┌──────────┐ │ ...etc (scale to zero) │
+                                 │ Postgres  │ └────────────────────────┘
                                  └──────────┘
 ```
 
@@ -58,10 +58,15 @@ python scripts/modal_setup.py --dry-run
 
 ```bash
 # Deploy Postgres + Langfuse + LiteLLM
-modal deploy scripts/modal_services.py
+modal deploy scripts/modal_services.py --env goat
 
-# (Optional) Deploy vLLM local model server
-modal deploy scripts/modal_vllm.py
+# Deploy vLLM local model servers (one app per model, each scales to zero)
+VLLM_MODEL=llama-3.1-8b modal deploy scripts/modal_vllm.py --env goat
+VLLM_MODEL=qwen3-4b modal deploy scripts/modal_vllm.py --env goat
+VLLM_MODEL=qwen3-30b-a3b modal deploy scripts/modal_vllm.py --env goat
+
+# Deploy GPT OSS models (dedicated script: CUDA 12.8, vLLM 0.13.0, speculative decoding)
+GPT_OSS_MODEL=gpt-oss-20b modal deploy scripts/modal_gpt_oss.py --env goat
 ```
 
 ### 4. Build the Eval Binary
@@ -96,10 +101,13 @@ python scripts/modal_results.py <run_id> --full
 |--------|---------|
 | `modal_setup.py` | Interactive environment + secrets creation |
 | `modal_services.py` | Deploy Postgres, Langfuse, LiteLLM as Modal Functions |
-| `modal_vllm.py` | Deploy vLLM GPU model server (Llama-3.1-8B on A10G) |
+| `modal_vllm.py` | Parameterized vLLM server — deploys Llama/Qwen models via `VLLM_MODEL` env var |
+| `modal_gpt_oss.py` | GPT OSS server — CUDA 12.8, vLLM 0.13.0, speculative decoding via `GPT_OSS_MODEL` |
+| `model_registry.py` | Reference doc for all model configs (HF IDs, GPUs, vLLM settings) |
 | `modal_sandbox.py` | Run goat-eval in isolated per-task sandboxes |
 | `modal_results.py` | View benchmark results from Modal volume |
 | `build_eval.sh` | Cross-compile goat-eval binary for Linux |
+| `run_cross_model_modal.sh` | Run smoke benchmark across multiple models |
 
 ## Modal Secrets
 
@@ -119,8 +127,12 @@ Created by `modal_setup.py` in the `goat` environment:
 | `goat-pgdata` | Postgres data persistence |
 | `goat-results` | Benchmark results |
 | `goat-model-cache` | HuggingFace model weights for vLLM |
+| `goat-vllm-cache` | vLLM compilation cache |
+| `goat-flashinfer-cache` | FlashInfer MoE kernel cache (GPT OSS) |
 
 ## Models Available Through LiteLLM
+
+### Cloud Models
 
 | Model Name | Provider | Notes |
 |------------|----------|-------|
@@ -128,7 +140,23 @@ Created by `modal_setup.py` in the `goat` environment:
 | `gpt-5-mini` | Azure OpenAI | Better quality |
 | `gpt-4o-mini` | Azure OpenAI | Previous gen |
 | `llama-3.3-70b` | Groq | Fast open-weight |
-| `llama-3.1-8b-local` | vLLM on Modal GPU | Requires modal_vllm.py deployed |
+
+### Local Models (vLLM on Modal)
+
+All local models use the `-local` suffix. Deploy with parameterized scripts — each creates a uniquely-named Modal app that scales to zero independently.
+
+| Model Name | HF Model | GPU | Deploy Command |
+|------------|----------|-----|----------------|
+| `llama-3.1-8b-local` | meta-llama/Llama-3.1-8B-Instruct | A10G | `VLLM_MODEL=llama-3.1-8b modal deploy scripts/modal_vllm.py` |
+| `qwen3-4b-local` | Qwen/Qwen3-4B-Instruct-2507 | A10G | `VLLM_MODEL=qwen3-4b modal deploy scripts/modal_vllm.py` |
+| `qwen3-30b-a3b-local` | Qwen/Qwen3-30B-A3B-Instruct-2507 | A10G | `VLLM_MODEL=qwen3-30b-a3b modal deploy scripts/modal_vllm.py` |
+| `qwen3-235b-local` | Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 | A100-80GB | `VLLM_MODEL=qwen3-235b modal deploy scripts/modal_vllm.py` |
+| `gpt-oss-20b-local` | openai/gpt-oss-20b | H100 | `GPT_OSS_MODEL=gpt-oss-20b modal deploy scripts/modal_gpt_oss.py` |
+| `gpt-oss-120b-local` | openai/gpt-oss-120b | H100 | `GPT_OSS_MODEL=gpt-oss-120b modal deploy scripts/modal_gpt_oss.py` |
+
+> **GPU costs**: A10G (~$1.10/hr), A100-80GB (~$3.30/hr), H100 (~$4.50/hr). All apps scale to zero when idle (`scaledown_window=5min`).
+
+> **Go code**: `IsLocalModel()` in `pkg/llm/translate.go` auto-detects `-local` suffix and applies `temperature: 0.3` + `tool_choice: "auto"` for reliable tool calling.
 
 ## Langfuse Dashboard
 
