@@ -40,12 +40,22 @@ langfuse_secret = modal.Secret.from_name("goat-langfuse", environment_name=MODAL
 postgres_secret = modal.Secret.from_name("goat-postgres", environment_name=MODAL_ENVIRONMENT)
 
 # ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+# Persistent Postgres data -- survives container restarts / cold-starts so
+# Prisma migrations are a fast no-op instead of a full rebuild.
+langfuse_pg_volume = modal.Volume.from_name(
+    "goat-langfuse-pg", create_if_missing=True, environment_name=MODAL_ENVIRONMENT
+)
+
+# ---------------------------------------------------------------------------
 # Images
 # ---------------------------------------------------------------------------
 
 # Langfuse: Alpine image with Python + Node.js + Postgres (all co-located).
 # The Langfuse v2 app is copied from the official image. Postgres data dir
-# is pre-initialized in the image build step (ephemeral, fine for dev/benchmarks).
+# is pre-initialized in the image as a template; at runtime it is copied to
+# a persistent Modal Volume on first boot (see langfuse_pg_volume).
 langfuse_image = modal.Image.from_dockerfile(
     str(Path(__file__).parent / "Dockerfile.langfuse"),
 )
@@ -62,7 +72,7 @@ litellm_image = (
 
 
 # ---------------------------------------------------------------------------
-# Langfuse (with co-located Postgres)
+# Langfuse (with co-located Postgres, volume-backed for persistence)
 # ---------------------------------------------------------------------------
 @app.function(
     image=langfuse_image,
@@ -70,19 +80,40 @@ litellm_image = (
     timeout=24 * 60 * MINUTES,
     min_containers=1,
     memory=2048,
+    volumes={"/pgdata": langfuse_pg_volume},
 )
 @modal.concurrent(max_inputs=100)
 @modal.web_server(port=3000, startup_timeout=5 * MINUTES)
 def langfuse():
-    """Run Langfuse v2 with co-located Postgres on localhost."""
+    """Run Langfuse v2 with persistent Postgres (volume-backed)."""
     pg_user = os.environ.get("POSTGRES_USER", "goat")
     pg_pass = os.environ.get("POSTGRES_PASSWORD", "goat")
+    pg_data = "/pgdata/data"
 
-    # ── Start Postgres (localhost, pre-initialized data dir) ──
+    # ── Initialize Postgres data dir on volume (first run only) ──
+    # The Dockerfile pre-builds a data dir at /var/lib/postgresql/data.
+    # On first deploy the volume is empty, so we copy the template over.
+    # On subsequent restarts the volume already has data → fast startup.
+    if not os.path.exists(os.path.join(pg_data, "PG_VERSION")):
+        print("First run: initializing Postgres data dir on volume...")
+        subprocess.run(["rm", "-rf", pg_data], check=False)
+        subprocess.run(
+            ["cp", "-a", "/var/lib/postgresql/data", pg_data], check=True,
+        )
+        subprocess.run(["chown", "-R", "postgres:postgres", "/pgdata"], check=True)
+        print("  Postgres data dir copied to volume")
+    else:
+        print("Postgres data dir found on volume (persistent)")
+
+    # Ensure /run/postgresql exists (ephemeral tmpfs, not on volume)
+    os.makedirs("/run/postgresql", exist_ok=True)
+    subprocess.run(["chown", "-R", "postgres:postgres", "/run/postgresql"], check=False)
+
+    # ── Start Postgres from volume-backed data dir ──
     print("Starting co-located Postgres...")
     subprocess.run(
         ["su-exec", "postgres", "pg_ctl", "start",
-         "-D", "/var/lib/postgresql/data", "-l", "/tmp/pg.log",
+         "-D", pg_data, "-l", "/tmp/pg.log",
          "-w", "-o", "-p 5432"],
         check=True,
     )
@@ -104,12 +135,6 @@ def langfuse():
          f"THEN CREATE ROLE {pg_user} WITH LOGIN PASSWORD '{pg_pass}' CREATEDB; END IF; END $$;"],
         check=False,
     )
-    subprocess.run(
-        ["su-exec", "postgres", "psql", "-p", "5432", "-tc",
-         f"SELECT 1 FROM pg_database WHERE datname='langfuse'"],
-        capture_output=True,
-    )
-    # Create langfuse database if it doesn't exist
     r = subprocess.run(
         ["su-exec", "postgres", "psql", "-p", "5432", "-tc",
          "SELECT 1 FROM pg_database WHERE datname='langfuse'"],
@@ -188,6 +213,8 @@ def langfuse():
 @modal.web_server(port=4000, startup_timeout=3 * MINUTES)
 def litellm():
     """Run LiteLLM proxy -- stateless, Langfuse via HTTP callbacks."""
+    import urllib.request
+
     # Ensure no DATABASE_URL leaks in (would trigger Prisma requirement)
     os.environ.pop("DATABASE_URL", None)
 
@@ -202,7 +229,22 @@ def litellm():
     # Point Langfuse client at the internal Langfuse service
     langfuse_host = "http://goat-services-langfuse.modal.internal:3000"
     os.environ["LANGFUSE_HOST"] = langfuse_host
-    print(f"  Langfuse: {langfuse_host}")
+
+    # Wait for Langfuse to be ready before starting the proxy so the first
+    # callbacks don't hit a still-migrating instance (BUG-langfuse-callback-errors).
+    print(f"  Waiting for Langfuse at {langfuse_host} ...")
+    for i in range(90):
+        try:
+            req = urllib.request.Request(f"{langfuse_host}/api/public/health")
+            resp = urllib.request.urlopen(req, timeout=3)
+            if resp.status == 200:
+                print(f"  Langfuse ready ({i + 1}s)")
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    else:
+        print("  Warning: Langfuse not ready after 90s, starting LiteLLM anyway")
 
     providers = [k for k in ["AZURE_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] if os.environ.get(k)]
     print(f"LiteLLM starting (stateless, no DB)")

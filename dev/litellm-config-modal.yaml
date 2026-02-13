@@ -19,7 +19,8 @@ model_list:
       api_key: os.environ/AZURE_API_KEY
       api_base: os.environ/AZURE_API_BASE
       api_version: "2024-06-01"
-      base_model: gpt-4o-mini  # closest known model for cost tracking
+    model_info:
+      base_model: gpt-4o-mini  # cost tracking -- closest known model
 
   - model_name: gpt-5-mini
     litellm_params:
@@ -27,7 +28,8 @@ model_list:
       api_key: os.environ/AZURE_API_KEY
       api_base: os.environ/AZURE_API_BASE
       api_version: "2024-06-01"
-      base_model: gpt-4o-mini  # closest known model for cost tracking
+    model_info:
+      base_model: gpt-4o-mini  # cost tracking -- closest known model
 
   # Groq
   - model_name: llama-3.3-70b
@@ -35,11 +37,44 @@ model_list:
       model: groq/llama-3.3-70b-versatile
       api_key: os.environ/GROQ_API_KEY
 
-  # vLLM local model on Modal GPU (deployed via: modal deploy scripts/modal_vllm.py --env goat)
+  # vLLM local models on Modal GPU
+  # Deploy with: VLLM_MODEL=<key> modal deploy scripts/modal_vllm.py --env goat
   - model_name: llama-3.1-8b-local
     litellm_params:
       model: openai/meta-llama/Llama-3.1-8B-Instruct
-      api_base: https://phare-goat--goat-vllm-serve.modal.run/v1
+      api_base: https://phare-goat--goat-vllm-llama-3-1-8b-serve.modal.run/v1
+      api_key: "not-needed"
+
+  - model_name: qwen3-4b-local
+    litellm_params:
+      model: openai/Qwen/Qwen3-4B-Instruct-2507
+      api_base: https://phare-goat--goat-vllm-qwen3-4b-serve.modal.run/v1
+      api_key: "not-needed"
+
+  - model_name: qwen3-30b-a3b-local
+    litellm_params:
+      model: openai/Qwen/Qwen3-30B-A3B-Instruct-2507
+      api_base: https://phare-goat--goat-vllm-qwen3-30b-a3b-serve.modal.run/v1
+      api_key: "not-needed"
+
+  - model_name: qwen3-235b-local
+    litellm_params:
+      model: openai/Qwen/Qwen3-235B-A22B-Instruct-2507-FP8
+      api_base: https://phare-goat--goat-vllm-qwen3-235b-serve.modal.run/v1
+      api_key: "not-needed"
+
+  # GPT OSS models on Modal GPU (H100)
+  # Deploy with: GPT_OSS_MODEL=<key> modal deploy scripts/modal_gpt_oss.py --env goat
+  - model_name: gpt-oss-20b-local
+    litellm_params:
+      model: openai/openai/gpt-oss-20b
+      api_base: https://phare-goat--goat-vllm-gpt-oss-20b-serve.modal.run/v1
+      api_key: "not-needed"
+
+  - model_name: gpt-oss-120b-local
+    litellm_params:
+      model: openai/openai/gpt-oss-120b
+      api_base: https://phare-goat--goat-vllm-gpt-oss-120b-serve.modal.run/v1
       api_key: "not-needed"
 
   # OpenAI — Embeddings

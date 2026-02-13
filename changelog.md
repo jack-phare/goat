@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-02-13 — vLLM Model Expansion
+
+Parameterized the vLLM deployment to support multiple local models on Modal, expanding from a single hardcoded Llama model to 6 configurable models across 3 GPU tiers.
+
+### New Models
+
+- **Qwen3-4B** (`qwen3-4b-local`): Qwen/Qwen3-4B-Instruct-2507 on A10G -- lightweight, fast.
+- **Qwen3-30B-A3B** (`qwen3-30b-a3b-local`): MoE model, 3B active params on A10G.
+- **Qwen3-235B** (`qwen3-235b-local`): Large MoE on A100-80GB (deploy on demand).
+- **GPT OSS 20B** (`gpt-oss-20b-local`): OpenAI's open MoE model on H100 with speculative decoding.
+- **GPT OSS 120B** (`gpt-oss-120b-local`): Larger variant on H100 (deploy on demand).
+
+### Infrastructure
+
+- **Parameterized vLLM script**: `VLLM_MODEL=<key> modal deploy scripts/modal_vllm.py` creates a uniquely-named app per model (e.g. `goat-vllm-qwen3-4b`). Multiple models live simultaneously, each scales to zero independently.
+- **Dedicated GPT OSS script** (`scripts/modal_gpt_oss.py`): CUDA 12.8 image, vLLM 0.13.0, EAGLE3 speculative decoding, flashinfer MoE kernels.
+- **Model registry** (`scripts/model_registry.py`): reference doc for all model configs. Deploy scripts inline configs to avoid Modal container import issues.
+- **LiteLLM routing**: all 6 new models added to `litellm-config-modal.yaml` with `-local` suffix naming convention.
+
+### Go Code
+
+- `IsLocalModel()` in `pkg/llm/translate.go` detects `-local` suffix models and applies temperature 0.3 + `tool_choice: "auto"` for reliable tool calling with open-weight models.
+
+### Verified
+
+- Smoke benchmark (5 tasks) passed 5/5 on qwen3-4b-local (74s), llama-3.1-8b-local (90s), gpt-oss-20b-local (241s).
+
+---
+
 ## 2026-02-13 — Groq Tool-Calling Fix
 
 Addressed `GroqException - Failed to call a function` errors that caused 10-16x slowdown on Groq/Llama benchmarks via LiteLLM mid-stream retries.

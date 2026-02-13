@@ -16,4 +16,5 @@ logs/
 # Build artifacts
 anthropic-ai-claude-code-*.tgz
 
-thoughts/
+scripts/__pycache__/
+thoughts/scripts/__pycache__/

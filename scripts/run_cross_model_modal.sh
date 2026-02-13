@@ -5,9 +5,11 @@
 #   bash scripts/run_cross_model_modal.sh
 #
 # Prerequisites:
-#   - modal deploy scripts/modal_services.py --env goat   (LiteLLM + Langfuse)
-#   - modal deploy scripts/modal_vllm.py --env goat       (vLLM for local model)
-#   - bash scripts/build_eval.sh amd64                    (goat-eval binary)
+#   - modal deploy scripts/modal_services.py --env goat                  (LiteLLM + Langfuse)
+#   - VLLM_MODEL=llama-3.1-8b modal deploy scripts/modal_vllm.py --env goat  (vLLM models)
+#   - VLLM_MODEL=qwen3-4b     modal deploy scripts/modal_vllm.py --env goat
+#   - bash scripts/build_eval.sh amd64                                   (goat-eval binary)
+#   See scripts/model_registry.py for all available models.
 #
 # Results are stored on the goat-results Modal Volume and can be viewed with:
 #   uv run --with modal python3 scripts/modal_results.py
@@ -19,8 +21,13 @@ BENCHMARK="$SCRIPT_DIR/benchmark_smoke.json"
 PARALLEL=2
 MODAL_PYTHON="uv run --with modal python3"
 
-# Models to benchmark (must match names in dev/litellm-config-modal.yaml)
-MODELS="gpt-5-nano gpt-5-mini gpt-4o-mini llama-3.3-70b llama-3.1-8b-local"
+# Models to benchmark (must match names in dev/litellm-config-modal.yaml).
+# Override with MODELS env var. Expensive GPU models (A100/H100) are commented
+# out by default -- deploy them first, then add to the list.
+DEFAULT_MODELS="gpt-5-nano gpt-5-mini gpt-4o-mini llama-3.3-70b llama-3.1-8b-local qwen3-4b-local"
+# Expensive models (uncomment / append after deploying):
+#   qwen3-30b-a3b-local qwen3-235b-local gpt-oss-20b-local gpt-oss-120b-local
+MODELS="${MODELS:-$DEFAULT_MODELS}"
 
 echo "================================================================"
 echo "Cross-Model Benchmark: $(date)"
