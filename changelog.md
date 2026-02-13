@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-02-13 — Custom Skills Evaluation Framework
+
+Wired goat's existing skill infrastructure into the eval binary and created benchmark skills and tasks for A/B testing skill-augmented vs vanilla eval runs.
+
+### Eval Binary Skill Support
+
+- **`-skills-dir` flag** (`cmd/eval/main.go`): When provided, loads skills from the given directory using `prompt.NewSkillLoader`, registers them in a `SkillRegistry`, wires a `SkillProviderAdapter`, and registers the `SkillTool` with argument substitution. The assembler injects skill metadata into the system prompt. When omitted, behavior is unchanged (baseline mode).
+
+### Benchmark Skills
+
+Three skills created in `eval/skills/.claude/skills/`, following the standard `.claude/skills/{name}/SKILL.md` convention:
+
+- **`go-expert`** (~1k tokens): Go idioms, error handling (`fmt.Errorf` wrapping, sentinel errors), concurrency patterns (errgroup, context cancellation), functional options, stdlib usage (slog, encoding/json, filepath).
+- **`project-context`** (~1.1k tokens): Simulated layered Go web app — directory structure, repository pattern, handler/service/domain/storage layers, chi router conventions, config-from-env pattern.
+- **`testing-patterns`** (~1.7k tokens): Table-driven tests with `t.Run`, hand-crafted mocks via small interfaces, `httptest` for handler testing, golden files, `t.Helper()`/`t.Cleanup()` patterns, benchmarks.
+
+### Skill-Specific Benchmark Tasks
+
+- **`eval/benchmark_skills.json`**: 15 tasks (5 per skill) across 3 categories:
+  - **Skill-relevant** (3 per skill): tasks where the specific skill knowledge is directly applicable.
+  - **Skill-agnostic** (1 per skill): baseline tasks where skills shouldn't help or hurt.
+  - **Skill-transfer** (1 per skill): adjacent-domain tasks testing generalization.
+
+### A/B Benchmark Runner
+
+- **`--skills-dir` flag** (`scripts/modal_sandbox.py`): Mounts the skills directory into the Modal sandbox at `/opt/skills/` and passes `-skills-dir /opt/skills` to `goat-eval`.
+- **`--ab` flag**: Runs each task twice (baseline without skills, then with skills), stores results with `-baseline`/`-skills` suffixes, and generates a paired comparison summary with pass rates for both variants.
+
+### Tests
+
+- **Integration test** (`cmd/eval/skills_integration_test.go`): Validates the full pipeline — load 3 skills from `eval/skills/`, register in registry, format for system prompt, wire adapter, invoke SkillTool, verify body content, verify tool registry.
+- **E2E test** (`cmd/eval/skills_e2e_test.go`): Runs the full agent loop against a live LLM (gpt-4o-mini). Uses a `secret-word` test skill containing "BANANA-TRUMPET-42" — confirms the LLM sees skills in the system prompt, emits `tool_use: Skill(skill="secret-word")`, receives the body, and includes the secret word in its final response. Requires `OPENAI_API_KEY`.
+
+### Verified
+
+- Integration test: 7/7 subtests pass (load, register, format, invoke x3, content check, unknown error, registry).
+- E2E test: gpt-4o-mini invoked the Skill tool and returned "The secret word is: BANANA-TRUMPET-42." (2.77s).
+- All 72 existing skill unit tests pass (pkg/prompt, pkg/tools).
+- Eval binary loads 3 skills from `eval/skills/` and compiles cleanly.
+
+---
+
 ## 2026-02-13 — Persistent Langfuse Storage + Trace Verification
 
 Langfuse trace data now persists across Modal container restarts via a volume-backed Postgres. Added tooling to verify traces and sync them to local dev.

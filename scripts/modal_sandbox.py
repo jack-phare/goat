@@ -24,6 +24,12 @@ Usage:
     # Batch mode (parallel)
     python scripts/modal_sandbox.py --batch prompts.json --parallel 4
 
+    # Skill-augmented eval (loads skills into sandbox)
+    python scripts/modal_sandbox.py --prompt "Write a Go function" --skills-dir eval/skills
+
+    # A/B comparison: run each task with and without skills
+    python scripts/modal_sandbox.py --batch eval/benchmark_skills.json --skills-dir eval/skills --ab
+
     # Direct API mode (bypass LiteLLM, call provider directly)
     python scripts/modal_sandbox.py --prompt "Hello" --api-url https://api.groq.com/openai/v1
 
@@ -65,6 +71,23 @@ results_volume = modal.Volume.from_name(
 )
 
 
+def build_sandbox_image(skills_dir: str | None = None) -> modal.Image:
+    """Build the sandbox image, optionally including a skills directory.
+
+    When skills_dir is provided, the directory is copied into /opt/skills/
+    inside the image. The eval binary can then be invoked with
+    -skills-dir /opt/skills to load skills.
+    """
+    img = sandbox_image
+    if skills_dir:
+        skills_path = Path(skills_dir).resolve()
+        if not skills_path.exists():
+            print(f"Error: skills directory not found: {skills_dir}", file=sys.stderr)
+            sys.exit(1)
+        img = img.add_local_dir(str(skills_path), remote_path="/opt/skills")
+    return img
+
+
 def _shell_quote(s: str) -> str:
     return shlex.quote(s)
 
@@ -95,11 +118,14 @@ def run_single(
     max_turns: int,
     timeout: int,
     api_url: str | None = None,
+    skills_dir: str | None = None,
 ) -> dict:
     """Run a single prompt in an isolated Modal sandbox. Returns result dict."""
     app = modal.App.lookup(
         "goat-sandbox", environment_name=MODAL_ENVIRONMENT, create_if_missing=True
     )
+
+    image = build_sandbox_image(skills_dir)
 
     # Resolve LLM endpoint
     base_url = api_url or discover_litellm_url()
@@ -110,10 +136,12 @@ def run_single(
     print(f"  LLM endpoint: {base_url}")
     print(f"  Max turns: {max_turns}")
     print(f"  Timeout: {timeout}s")
+    if skills_dir:
+        print(f"  Skills: {skills_dir}")
     print()
 
     sb = modal.Sandbox.create(
-        image=sandbox_image,
+        image=image,
         secrets=[litellm_secret],
         volumes={"/results": results_volume},
         workdir="/workspace",
@@ -127,7 +155,8 @@ def run_single(
         f'OPENAI_API_KEY="$LITELLM_MASTER_KEY" '
         f'EVAL_MODEL={_shell_quote(model)}'
     )
-    eval_cmd = f'/opt/goat-eval -prompt {_shell_quote(prompt)} -max-turns {max_turns}'
+    skills_flag = " -skills-dir /opt/skills" if skills_dir else ""
+    eval_cmd = f'/opt/goat-eval -prompt {_shell_quote(prompt)} -max-turns {max_turns}{skills_flag}'
     shell_cmd = f'{env_cmd} && {eval_cmd}'
 
     print(f"Running: goat-eval -prompt '{prompt[:80]}...' -max-turns {max_turns}")
@@ -155,6 +184,7 @@ def run_single(
     result = {
         "prompt": prompt,
         "model": model,
+        "skills_enabled": bool(skills_dir),
         "output": "".join(stdout_lines).strip(),
         "exit_code": exit_code,
         "stderr": "".join(stderr_lines).strip(),
@@ -181,6 +211,8 @@ async def run_single_task_async(
     timeout: int,
     run_id: str,
     results_dir: str,
+    image: modal.Image | None = None,
+    skills_enabled: bool = False,
 ) -> dict:
     """Run a single benchmark task in its own sandbox (async)."""
     app = await modal.App.lookup.aio(
@@ -190,11 +222,12 @@ async def run_single_task_async(
     task_id = task.get("id", f"task-{task_index}")
     prompt = task["prompt"]
     max_turns = task.get("max_turns", 10)
+    variant = " [+skills]" if skills_enabled else ""
 
-    print(f"[{task_index + 1}/{total}] {task_id}: {prompt[:60]}...")
+    print(f"[{task_index + 1}/{total}] {task_id}{variant}: {prompt[:60]}...")
 
     sb = await modal.Sandbox.create.aio(
-        image=sandbox_image,
+        image=image or sandbox_image,
         secrets=[litellm_secret],
         volumes={"/results": results_volume},
         workdir="/workspace",
@@ -207,7 +240,8 @@ async def run_single_task_async(
         f'OPENAI_API_KEY="$LITELLM_MASTER_KEY" '
         f'EVAL_MODEL={_shell_quote(model)}'
     )
-    eval_cmd = f'/opt/goat-eval -prompt {_shell_quote(prompt)} -max-turns {max_turns}'
+    skills_flag = " -skills-dir /opt/skills" if skills_enabled else ""
+    eval_cmd = f'/opt/goat-eval -prompt {_shell_quote(prompt)} -max-turns {max_turns}{skills_flag}'
     shell_cmd = f'{env_cmd} && {eval_cmd}'
 
     start = time.time()
@@ -225,10 +259,13 @@ async def run_single_task_async(
     elapsed = time.time() - start
     exit_code = p.returncode
 
+    # Use a suffix in the result filename for A/B runs so both variants are stored
+    result_suffix = "-skills" if skills_enabled else "-baseline"
     result = {
         "id": task_id,
         "prompt": prompt,
         "model": model,
+        "skills_enabled": skills_enabled,
         "output": "".join(stdout_lines).strip(),
         "exit_code": exit_code,
         "stderr": "".join(stderr_lines).strip(),
@@ -237,9 +274,10 @@ async def run_single_task_async(
 
     # Write result to volume via sandbox (safe JSON write using python, not heredoc)
     result_json = json.dumps(result, indent=2)
+    result_filename = f"{task_id}{result_suffix}.json"
     write_cmd = (
         f"python3 -c 'import sys; open(sys.argv[1], \"w\").write(sys.stdin.read())' "
-        f"{results_dir}/{task_id}.json"
+        f"{results_dir}/{result_filename}"
     )
     write_p = await sb.exec.aio("bash", "-c", f"mkdir -p {results_dir} && echo {_shell_quote(result_json)} | {write_cmd}")
     # Drain output
@@ -260,8 +298,15 @@ async def run_batch_async(
     timeout: int,
     max_parallel: int,
     api_url: str | None = None,
+    skills_dir: str | None = None,
+    ab_mode: bool = False,
 ) -> None:
-    """Run batch of prompts with per-task sandbox isolation and parallelism."""
+    """Run batch of prompts with per-task sandbox isolation and parallelism.
+
+    When ab_mode is True and skills_dir is provided, each task runs twice:
+    once without skills (baseline) and once with skills. Results are stored
+    with -baseline and -skills suffixes for paired comparison.
+    """
     batch_path = Path(batch_file)
     if not batch_path.exists():
         print(f"Error: batch file not found: {batch_file}", file=sys.stderr)
@@ -272,34 +317,65 @@ async def run_batch_async(
         print("Error: batch file must contain a JSON array", file=sys.stderr)
         sys.exit(1)
 
+    if ab_mode and not skills_dir:
+        print("Error: --ab requires --skills-dir", file=sys.stderr)
+        sys.exit(1)
+
+    # Build images: baseline (no skills) and optionally skills-augmented
+    baseline_image = sandbox_image
+    skills_image = build_sandbox_image(skills_dir) if skills_dir else None
+
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_dir = f"/results/{run_id}"
 
     # Resolve LLM endpoint
     base_url = api_url or discover_litellm_url()
 
-    print(f"Batch run: {len(tasks)} tasks")
+    mode_label = "A/B" if ab_mode else ("skills" if skills_dir else "baseline")
+    print(f"Batch run: {len(tasks)} tasks ({mode_label})")
     print(f"  Run ID: {run_id}")
     print(f"  Environment: {MODAL_ENVIRONMENT}")
     print(f"  Model: {model}")
     print(f"  LLM endpoint: {base_url}")
     print(f"  Parallelism: {max_parallel}")
     print(f"  Timeout per task: {timeout}s")
+    if skills_dir:
+        print(f"  Skills: {skills_dir}")
+    if ab_mode:
+        print(f"  Mode: A/B (each task runs with and without skills)")
     print()
+
+    # Build the list of (task, image, skills_enabled) tuples to run
+    runs: list[tuple[dict, modal.Image, bool]] = []
+    if ab_mode:
+        # Each task runs twice: baseline then skills
+        for task in tasks:
+            runs.append((task, baseline_image, False))
+            runs.append((task, skills_image, True))
+    elif skills_dir:
+        # Skills-only mode
+        for task in tasks:
+            runs.append((task, skills_image, True))
+    else:
+        # Baseline mode (no skills)
+        for task in tasks:
+            runs.append((task, baseline_image, False))
 
     # Run tasks with bounded parallelism
     semaphore = asyncio.Semaphore(max_parallel)
-    total = len(tasks)
+    total = len(runs)
 
-    async def run_with_semaphore(task, idx):
+    async def run_with_semaphore(run_tuple, idx):
+        task, image, skills_on = run_tuple
         async with semaphore:
             return await run_single_task_async(
                 task, idx, total, model, base_url, timeout, run_id, results_dir,
+                image=image, skills_enabled=skills_on,
             )
 
     start_all = time.time()
     results = await asyncio.gather(
-        *(run_with_semaphore(task, i) for i, task in enumerate(tasks)),
+        *(run_with_semaphore(run, i) for i, run in enumerate(runs)),
         return_exceptions=True,
     )
 
@@ -307,12 +383,14 @@ async def run_batch_async(
     clean_results = []
     for i, r in enumerate(results):
         if isinstance(r, Exception):
-            task_id = tasks[i].get("id", f"task-{i}")
+            task, _, skills_on = runs[i]
+            task_id = task.get("id", f"task-{i}")
             print(f"  Error in {task_id}: {r}", file=sys.stderr)
             clean_results.append({
                 "id": task_id,
-                "prompt": tasks[i]["prompt"],
+                "prompt": task["prompt"],
                 "model": model,
+                "skills_enabled": skills_on,
                 "output": "",
                 "exit_code": -1,
                 "stderr": str(r),
@@ -327,12 +405,36 @@ async def run_batch_async(
     summary = {
         "run_id": run_id,
         "model": model,
+        "mode": mode_label,
+        "skills_dir": skills_dir,
         "total_tasks": len(tasks),
+        "total_runs": len(runs),
         "passed": sum(1 for r in clean_results if r["exit_code"] == 0),
         "failed": sum(1 for r in clean_results if r["exit_code"] != 0),
         "total_elapsed_s": round(total_elapsed, 2),
         "results": clean_results,
     }
+
+    # In A/B mode, add a paired comparison section
+    if ab_mode:
+        comparisons = []
+        # Results alternate: baseline, skills, baseline, skills, ...
+        for i in range(0, len(clean_results), 2):
+            if i + 1 < len(clean_results):
+                baseline = clean_results[i]
+                skilled = clean_results[i + 1]
+                comparisons.append({
+                    "id": baseline["id"],
+                    "baseline_pass": baseline["exit_code"] == 0,
+                    "skills_pass": skilled["exit_code"] == 0,
+                    "baseline_time_s": baseline["elapsed_s"],
+                    "skills_time_s": skilled["elapsed_s"],
+                })
+        summary["comparisons"] = comparisons
+        baseline_pass = sum(1 for c in comparisons if c["baseline_pass"])
+        skills_pass = sum(1 for c in comparisons if c["skills_pass"])
+        summary["baseline_pass_rate"] = f"{baseline_pass}/{len(comparisons)}"
+        summary["skills_pass_rate"] = f"{skills_pass}/{len(comparisons)}"
 
     # Write summary via a temporary sandbox
     app = await modal.App.lookup.aio(
@@ -361,7 +463,12 @@ async def run_batch_async(
     # Print summary
     print()
     print("=" * 60)
-    print(f"Batch complete: {summary['passed']}/{summary['total_tasks']} passed")
+    if ab_mode:
+        print(f"A/B Comparison complete ({len(tasks)} tasks, {len(runs)} runs)")
+        print(f"  Baseline: {summary['baseline_pass_rate']} passed")
+        print(f"  +Skills:  {summary['skills_pass_rate']} passed")
+    else:
+        print(f"Batch complete: {summary['passed']}/{summary['total_runs']} passed")
     print(f"Total time: {total_elapsed:.1f}s (wall clock)")
     print(f"Run ID: {run_id}")
     print(f"View results: python scripts/modal_results.py {run_id}")
@@ -382,6 +489,12 @@ Examples:
   # Batch with 4 parallel sandboxes
   python scripts/modal_sandbox.py --batch prompts.json --parallel 4
 
+  # Skill-augmented eval
+  python scripts/modal_sandbox.py --prompt "Write Go code" --skills-dir eval/skills
+
+  # A/B comparison (each task runs with and without skills)
+  python scripts/modal_sandbox.py --batch eval/benchmark_skills.json --skills-dir eval/skills --ab
+
   # Use a specific model
   python scripts/modal_sandbox.py --prompt "Hello" --model llama-3.1-8b-local
 
@@ -399,6 +512,11 @@ Examples:
     parser.add_argument("--timeout", type=int, default=600, help="Per-task timeout in seconds (default: 600)")
     parser.add_argument("--parallel", type=int, default=4, help="Max parallel sandboxes for batch (default: 4)")
     parser.add_argument("--api-url", help="Override LLM endpoint URL (bypass LiteLLM discovery)")
+    parser.add_argument("--skills-dir", help="Path to skills directory (mounted into sandbox)")
+    parser.add_argument(
+        "--ab", action="store_true",
+        help="A/B mode: run each task with and without skills (requires --skills-dir)",
+    )
 
     args = parser.parse_args()
 
@@ -409,10 +527,19 @@ Examples:
         )
         sys.exit(1)
 
+    if args.ab and not args.skills_dir:
+        parser.error("--ab requires --skills-dir")
+
     if args.prompt:
-        run_single(args.prompt, args.model, args.max_turns, args.timeout, args.api_url)
+        run_single(
+            args.prompt, args.model, args.max_turns, args.timeout,
+            api_url=args.api_url, skills_dir=args.skills_dir,
+        )
     elif args.batch:
-        asyncio.run(run_batch_async(args.batch, args.model, args.timeout, args.parallel, args.api_url))
+        asyncio.run(run_batch_async(
+            args.batch, args.model, args.timeout, args.parallel,
+            api_url=args.api_url, skills_dir=args.skills_dir, ab_mode=args.ab,
+        ))
 
 
 if __name__ == "__main__":

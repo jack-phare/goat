@@ -1,6 +1,6 @@
 // Headless eval binary for running Goat's agentic loop in benchmark sandboxes.
 //
-// The binary reads a prompt, runs the full agentic loop with 6 core tools,
+// The binary reads a prompt, runs the full agentic loop with core tools,
 // and writes the final assistant text to stdout.
 //
 // Environment variables:
@@ -11,9 +11,10 @@
 //
 // Flags:
 //
-//	-prompt   Prompt text (if empty, reads all of stdin)
-//	-cwd      Working directory for tools (default: current directory)
-//	-max-turns Maximum agentic loop turns (default: 100)
+//	-prompt     Prompt text (if empty, reads all of stdin)
+//	-cwd        Working directory for tools (default: current directory)
+//	-max-turns  Maximum agentic loop turns (default: 100)
+//	-skills-dir Directory containing skill subdirs with SKILL.md files (optional)
 package main
 
 import (
@@ -37,6 +38,7 @@ func main() {
 	promptFlag := flag.String("prompt", "", "Prompt text (reads stdin if empty)")
 	cwdFlag := flag.String("cwd", "", "Working directory for tools (default: current directory)")
 	maxTurns := flag.Int("max-turns", 100, "Maximum agentic loop turns")
+	skillsDir := flag.String("skills-dir", "", "Directory containing skill subdirs with SKILL.md files (enables skill-augmented eval)")
 	flag.Parse()
 
 	// Resolve prompt: flag > stdin
@@ -72,8 +74,35 @@ func main() {
 		Model:   model,
 	})
 
-	// Build tool registry with 6 core tools
+	// Build tool registry with core tools
 	registry := buildToolRegistry(cwd)
+
+	// Load skills if -skills-dir is provided (for skill-augmented benchmarks).
+	// The loader scans {skillsDir}/.claude/skills/{name}/SKILL.md following
+	// the standard skill directory convention.
+	var skillRegistry *prompt.SkillRegistry
+	if *skillsDir != "" {
+		loader := prompt.NewSkillLoader(*skillsDir, "")
+		skills, err := loader.LoadAll()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error loading skills from %s: %v\n", *skillsDir, err)
+			os.Exit(1)
+		}
+		if len(skills) == 0 {
+			fmt.Fprintf(os.Stderr, "warning: no skills found in %s/.claude/skills/\n", *skillsDir)
+		} else {
+			fmt.Fprintf(os.Stderr, "loaded %d skill(s) from %s\n", len(skills), *skillsDir)
+		}
+		skillRegistry = prompt.NewSkillRegistry()
+		for _, entry := range skills {
+			skillRegistry.Register(entry)
+		}
+		adapter := &tools.SkillProviderAdapter{Inner: skillRegistry}
+		registry.Register(&tools.SkillTool{
+			Skills:         adapter,
+			ArgSubstituter: prompt.SubstituteArgs,
+		})
+	}
 
 	// Build agent config with full prompt assembly
 	config := agent.DefaultConfig()
@@ -87,6 +116,9 @@ func main() {
 	config.Permissions = &agent.AllowAllChecker{}
 	config.Hooks = &agent.NoOpHookRunner{}
 	config.Compactor = &agent.NoOpCompactor{}
+	if skillRegistry != nil {
+		config.Skills = skillRegistry
+	}
 
 	// Groq/Llama-specific tuning: use a concise system prompt and compact tool
 	// descriptions to reduce "Failed to call a function" errors.

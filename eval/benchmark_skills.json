@@ -1,0 +1,122 @@
+[
+  {
+    "id": "go-error-handling",
+    "prompt": "Write a Go function called LoadConfig that reads a JSON config file from a given path, validates that 'host' (string) and 'port' (int, 1-65535) fields are present and valid, and returns a Config struct or a wrapped error with context. Include the Config struct definition. Write it to config.go.",
+    "max_turns": 10,
+    "skill_relevant": true,
+    "target_skill": "go-expert",
+    "category": "code-generation"
+  },
+  {
+    "id": "go-concurrency",
+    "prompt": "Write a Go program in fetch.go that takes a list of 5 URLs (hardcoded), fetches them concurrently using errgroup, and returns the first error encountered or all response status codes. Use context for cancellation. Print results to stdout.",
+    "max_turns": 10,
+    "skill_relevant": true,
+    "target_skill": "go-expert",
+    "category": "code-generation"
+  },
+  {
+    "id": "go-functional-options",
+    "prompt": "Write a Go package in server.go that defines a Server struct with Host, Port, ReadTimeout, and WriteTimeout fields. Implement the functional options pattern with a New constructor and option functions: WithHost, WithPort, WithReadTimeout, WithWriteTimeout. Zero values should be sensible defaults.",
+    "max_turns": 10,
+    "skill_relevant": true,
+    "target_skill": "go-expert",
+    "category": "code-generation"
+  },
+  {
+    "id": "go-string-processing",
+    "prompt": "Write a Go function in words.go that counts word frequencies in a string, ignoring case and punctuation. Return a map[string]int. Use only the standard library. Include a main function that demonstrates it with a sample paragraph.",
+    "max_turns": 8,
+    "skill_relevant": false,
+    "target_skill": "go-expert",
+    "category": "code-generation"
+  },
+  {
+    "id": "go-cli-tool",
+    "prompt": "Write a Go CLI tool in main.go that accepts a directory path as a flag and prints a tree of all files and subdirectories with their sizes in human-readable format (KB, MB). Use the flag package and filepath.WalkDir.",
+    "max_turns": 10,
+    "skill_relevant": false,
+    "target_skill": "go-expert",
+    "category": "code-generation"
+  },
+  {
+    "id": "project-add-endpoint",
+    "prompt": "Given a Go web project using chi router, create internal/api/health.go with a health check handler that returns {\"status\": \"ok\", \"timestamp\": \"...\"} as JSON. Also create internal/api/health_test.go with a test using httptest. The handler should be a method on a Handler struct.",
+    "max_turns": 12,
+    "skill_relevant": true,
+    "target_skill": "project-context",
+    "category": "feature-implementation"
+  },
+  {
+    "id": "project-add-entity",
+    "prompt": "Create the domain model and repository interface for a 'Task' entity in a layered Go architecture. Create internal/domain/task.go with a Task struct (ID, Title, Status, CreatedAt fields), a TaskRepository interface (Create, GetByID, List, UpdateStatus methods), and domain error variables. Follow the repository pattern.",
+    "max_turns": 12,
+    "skill_relevant": true,
+    "target_skill": "project-context",
+    "category": "feature-implementation"
+  },
+  {
+    "id": "project-middleware",
+    "prompt": "Write a Go HTTP middleware in middleware.go that logs each request's method, path, status code, and duration using slog. It should wrap an http.Handler and work with any standard Go HTTP router. Include a test.",
+    "max_turns": 10,
+    "skill_relevant": true,
+    "target_skill": "project-context",
+    "category": "feature-implementation"
+  },
+  {
+    "id": "project-simple-crud",
+    "prompt": "Write a simple Go program in notes.go that implements an in-memory CRUD for notes (id, title, body). Expose HTTP endpoints: POST /notes, GET /notes, GET /notes/{id}, DELETE /notes/{id}. Use only the standard library net/http package.",
+    "max_turns": 12,
+    "skill_relevant": false,
+    "target_skill": "project-context",
+    "category": "feature-implementation"
+  },
+  {
+    "id": "project-config-loader",
+    "prompt": "Write a Go program in envconfig.go that loads configuration from environment variables with defaults and validation. Support PORT (int, default 8080), DATABASE_URL (string, required), LOG_LEVEL (string, default 'info', must be one of debug/info/warn/error). Print the loaded config.",
+    "max_turns": 8,
+    "skill_relevant": false,
+    "target_skill": "project-context",
+    "category": "code-generation"
+  },
+  {
+    "id": "test-table-driven",
+    "prompt": "Write a Go function called ValidateEmail in validate.go that checks if a string is a valid email (contains @, has domain part, no spaces). Then write comprehensive table-driven tests in validate_test.go covering: valid emails, missing @, empty string, spaces, multiple @, no domain, unicode characters. Use t.Run subtests.",
+    "max_turns": 10,
+    "skill_relevant": true,
+    "target_skill": "testing-patterns",
+    "category": "test-generation"
+  },
+  {
+    "id": "test-mock-interface",
+    "prompt": "Write a UserService in service.go that depends on a UserStore interface with GetByID and Create methods. Then write tests in service_test.go using hand-crafted mock implementations. Test: successful get, not found error, create with duplicate email error, and store failure. Use testify/assert.",
+    "max_turns": 12,
+    "skill_relevant": true,
+    "target_skill": "testing-patterns",
+    "category": "test-generation"
+  },
+  {
+    "id": "test-http-handler",
+    "prompt": "Write a Go HTTP handler function GetItem that reads an 'id' path parameter and returns a JSON item. Write tests in handler_test.go using httptest that cover: successful response (200), not found (404), and invalid id (400). Parse and verify the JSON response body in each test.",
+    "max_turns": 10,
+    "skill_relevant": true,
+    "target_skill": "testing-patterns",
+    "category": "test-generation"
+  },
+  {
+    "id": "test-simple-unit",
+    "prompt": "Write a Go function called Fibonacci in math.go that returns the nth Fibonacci number. Write tests in math_test.go for n=0 through n=10, and include a benchmark. Use basic Go testing (no external libraries).",
+    "max_turns": 8,
+    "skill_relevant": false,
+    "target_skill": "testing-patterns",
+    "category": "test-generation"
+  },
+  {
+    "id": "test-file-processing",
+    "prompt": "Write a Go function in csv.go that reads a CSV file and returns the sum of values in a specified column. Then write tests in csv_test.go that create temporary test files using t.TempDir(), test with valid data, missing column, empty file, and malformed CSV.",
+    "max_turns": 10,
+    "skill_relevant": false,
+    "target_skill": "testing-patterns",
+    "category": "test-generation"
+  }
+]
