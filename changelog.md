@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-02-14 — MCP Config, Multi-Turn REPL, Sandbox MCP Support
+
+Wired the existing MCP client library into the eval binary and sandbox orchestrator, added multi-turn REPL mode for conversational benchmarks, and extended the A/B framework to support 3-way comparisons (baseline vs +skills vs +skills+mcp).
+
+### Eval Binary — MCP Config (`-mcp-config`)
+
+- **`-mcp-config` flag** (`cmd/eval/main.go`): Accepts a path to a JSON file mapping server names to `types.McpServerConfig`. On startup, creates an `mcp.Client`, connects to each server (non-fatal on failure — logs warning to stderr), registers `ListMcpResources` and `ReadMcpResource` tools, and sets `config.MCPServers` so the prompt assembler injects the MCP system prompt section.
+- **`loadMCPConfig()` function**: Parses JSON into `map[string]types.McpServerConfig`, validates non-empty map.
+- **Example config** (`eval/mcp_configs/filesystem.json`): Pre-configured `@modelcontextprotocol/server-filesystem` for sandbox `/workspace` directory.
+
+### Eval Binary — Multi-Turn REPL (`-multi-turn`)
+
+- **`-multi-turn` flag** (`cmd/eval/main.go`): Enables conversational mode where the binary reads follow-up prompts from stdin after each turn completes. Uses `agent.Query.SendUserMessage()` for follow-ups, synchronized via a `turnDone` channel signaled on `ResultSubtypeSuccessTurn`.
+- **`runSingleShot()` / `runMultiTurn()`**: Refactored message consumption into two clear paths. Single-shot is unchanged (backward compatible). Multi-turn prints each response to stdout and turn metadata (turn number, cost) to stderr as JSON.
+- **`printTurnMeta()` helper**: Emits `{"turn":N,"cost_usd":X.XXXXXX}` to stderr after each turn for machine-readable benchmarking.
+
+### Sandbox Orchestrator — MCP Support
+
+- **`--mcp-config` flag** (`scripts/modal_sandbox.py`): Mounts the MCP config file into the sandbox at `/opt/mcp-config.json` and passes `-mcp-config /opt/mcp-config.json` to `goat-eval`.
+- **Node.js in sandbox image**: Added `nodejs` and `npm` to `apt_install` since most MCP servers are npm packages.
+- **3-way A/B mode**: When both `--skills-dir` and `--mcp-config` are provided with `--ab`, runs each task in up to 3 variants (baseline, +skills, +skills+mcp) with separate pass rates and per-task paired comparisons.
+- **Result dict**: Added `mcp_enabled` field alongside existing `skills_enabled`.
+
+### Tests
+
+- **`cmd/eval/mcp_test.go`** (5 tests): `TestLoadMCPConfig_Valid`, `_MultipleServers`, `_Empty`, `_InvalidJSON`, `_MissingFile`.
+- **`cmd/eval/multiturn_test.go`** (3 tests): `TestPrintTurnMeta`, `TestExtractText` (4 subtests), `TestPrintTurnMeta_ZeroCost`.
+- All 800+ existing tests pass with `-race`.
+
+### Verified
+
+- **Local**: Single-shot (returns "4"), multi-turn (returns "4" then "12"), MCP tools registered (15 `mcp__filesystem__*` tools).
+- **Modal sandbox**: Single-shot (returns "4"), MCP sandbox (15 tools registered), A/B batch (2 tasks × 2 variants = 4 runs, all pass).
+
+---
+
 ## 2026-02-13 — Custom Skills Evaluation Framework
 
 Wired goat's existing skill infrastructure into the eval binary and created benchmark skills and tasks for A/B testing skill-augmented vs vanilla eval runs.

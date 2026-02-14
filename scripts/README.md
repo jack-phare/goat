@@ -90,6 +90,17 @@ python scripts/modal_sandbox.py --prompt "Hello" --model llama-3.1-8b-local
 # Batch mode with 4 parallel sandboxes
 python scripts/modal_sandbox.py --batch prompts.json --parallel 4
 
+# With MCP servers (e.g. filesystem access in sandbox)
+python scripts/modal_sandbox.py --prompt "List files in /workspace" \
+  --mcp-config eval/mcp_configs/filesystem.json
+
+# A/B with skills + MCP (3-way comparison)
+python scripts/modal_sandbox.py \
+  --batch eval/benchmark_skills.json \
+  --skills-dir eval/skills \
+  --mcp-config eval/mcp_configs/filesystem.json \
+  --ab
+
 # View results
 python scripts/modal_results.py
 python scripts/modal_results.py <run_id> --full

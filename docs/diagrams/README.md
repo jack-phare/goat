@@ -23,7 +23,7 @@ a Go port of Claude Code's agentic loop.
 | 13 | [sdk-types](13-sdk-types.md) | `pkg/types/` | Message hierarchy, content blocks, enums, type system |
 | 14 | [end-to-end-request](14-end-to-end-request.md) | **Cross-cutting** | Complete trace of a single request through all components |
 | 15 | [provider-setup](15-provider-setup.md) | `cmd/example/` | Provider resolution, API key lookup, LiteLLM routing, env setup |
-| 16 | [skill-evaluation](16-skill-evaluation.md) | `cmd/eval/` + `pkg/prompt/` + `pkg/tools/` | Skill loading pipeline, eval binary wiring, A/B benchmark mode |
+| 16 | [skill-evaluation](16-skill-evaluation.md) | `cmd/eval/` + `pkg/prompt/` + `pkg/tools/` | Skill loading, MCP wiring, multi-turn REPL, A/B + 3-way benchmark |
 
 ## Reading Order
 
@@ -49,6 +49,8 @@ a Go port of Claude Code's agentic loop.
 - **12 packages** documented
 - **800+ tests** referenced
 - **133 prompt files** embedded
-- **21 static tools** + dynamic MCP tools + **Skill tool**
+- **22 static tools** + dynamic MCP tools + **Skill tool**
 - **15 hook events**, **6 permission modes**, **4 transport types**
 - **3 benchmark skills**, **15 skill-specific eval tasks**
+- **MCP config** + **multi-turn REPL** in eval binary
+- **3-way A/B** benchmarking (baseline vs +skills vs +skills+mcp)

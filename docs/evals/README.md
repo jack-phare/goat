@@ -155,6 +155,65 @@ evals/.venv/bin/inspect eval evals/humaneval.py \
   --model-base-url http://localhost:4000/v1
 ```
 
+## Goat-Eval Binary Flags
+
+The headless eval binary (`cmd/eval/main.go`) supports these flags:
+
+| Flag | Description |
+|------|-------------|
+| `-prompt` | Inline prompt text (otherwise reads from stdin) |
+| `-cwd` | Working directory for the agent (default: current dir) |
+| `-max-turns` | Maximum agentic turns (default: 10) |
+| `-skills-dir` | Path to skills directory (loads `.claude/skills/*/SKILL.md`) |
+| `-mcp-config` | Path to JSON file with MCP server configurations |
+| `-multi-turn` | Enable multi-turn REPL mode (read follow-up prompts from stdin) |
+
+### MCP Config
+
+Wire MCP servers (e.g. filesystem access) into the eval binary:
+
+```bash
+goat-eval -prompt "List files in /workspace" \
+  -mcp-config eval/mcp_configs/filesystem.json
+```
+
+Config format — maps server names to `McpServerConfig`:
+
+```json
+{
+  "filesystem": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+  }
+}
+```
+
+On startup, the binary connects to each server (non-fatal on failure), registers `mcp__*` tools dynamically, and injects MCP metadata into the system prompt.
+
+### Multi-Turn REPL
+
+For conversational benchmarks, use `-multi-turn` to send follow-up prompts via stdin:
+
+```bash
+# Pipe multi-turn input
+echo -e "What is 2+2?\nNow multiply by 3" | \
+  goat-eval -multi-turn
+
+# Or use -prompt for the first turn, stdin for follow-ups
+goat-eval -multi-turn -prompt "What is 2+2?" <<'EOF'
+Now multiply by 3
+What about divided by 2?
+EOF
+```
+
+Each turn's response is printed to stdout. Turn metadata (turn number, cost) is emitted as JSON to stderr:
+```json
+{"turn":1,"cost_usd":0.000150}
+```
+
+EOF or an empty line triggers graceful shutdown. Single-shot mode (no `-multi-turn`) is unchanged.
+
 ## File Structure
 
 ```
@@ -169,7 +228,13 @@ evals/
 └── swe_bench.py       # SWE-bench Verified task wrapper
 
 cmd/eval/
-└── main.go            # Headless eval binary source
+├── main.go            # Headless eval binary source
+├── mcp_test.go        # Tests for loadMCPConfig
+├── multiturn_test.go  # Tests for multi-turn helpers
+└── skills_*_test.go   # Skill integration + E2E tests
+
+eval/mcp_configs/
+└── filesystem.json    # Example MCP config for sandbox filesystem access
 
 logs/                  # Inspect eval logs (gitignored)
 ```
