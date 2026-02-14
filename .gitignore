@@ -17,4 +17,4 @@ logs/
 anthropic-ai-claude-code-*.tgz
 
 scripts/__pycache__/
-thoughts/scripts/__pycache__/
+thoughts/
