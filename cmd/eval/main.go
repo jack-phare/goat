@@ -11,14 +11,18 @@
 //
 // Flags:
 //
-//	-prompt     Prompt text (if empty, reads all of stdin)
-//	-cwd        Working directory for tools (default: current directory)
-//	-max-turns  Maximum agentic loop turns (default: 100)
-//	-skills-dir Directory containing skill subdirs with SKILL.md files (optional)
+//	-prompt      Prompt text (if empty, reads all of stdin)
+//	-cwd         Working directory for tools (default: current directory)
+//	-max-turns   Maximum agentic loop turns (default: 100)
+//	-skills-dir  Directory containing skill subdirs with SKILL.md files (optional)
+//	-mcp-config  Path to JSON file with MCP server configurations (optional)
+//	-multi-turn  Enable multi-turn REPL mode (read follow-up prompts from stdin)
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -29,6 +33,7 @@ import (
 
 	"github.com/jg-phare/goat/pkg/agent"
 	"github.com/jg-phare/goat/pkg/llm"
+	"github.com/jg-phare/goat/pkg/mcp"
 	"github.com/jg-phare/goat/pkg/prompt"
 	"github.com/jg-phare/goat/pkg/tools"
 	"github.com/jg-phare/goat/pkg/types"
@@ -39,21 +44,36 @@ func main() {
 	cwdFlag := flag.String("cwd", "", "Working directory for tools (default: current directory)")
 	maxTurns := flag.Int("max-turns", 100, "Maximum agentic loop turns")
 	skillsDir := flag.String("skills-dir", "", "Directory containing skill subdirs with SKILL.md files (enables skill-augmented eval)")
+	mcpConfig := flag.String("mcp-config", "", "Path to JSON file with MCP server configurations")
+	multiTurn := flag.Bool("multi-turn", false, "Enable multi-turn REPL mode (read follow-up prompts from stdin)")
 	flag.Parse()
 
 	// Resolve prompt: flag > stdin
+	// In multi-turn mode, only read one line from stdin (keep it open for follow-ups).
+	var stdinScanner *bufio.Scanner
 	promptText := *promptFlag
 	if promptText == "" {
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading stdin: %v\n", err)
-			os.Exit(1)
+		if *multiTurn {
+			stdinScanner = bufio.NewScanner(os.Stdin)
+			if stdinScanner.Scan() {
+				promptText = stdinScanner.Text()
+			}
+		} else {
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error reading stdin: %v\n", err)
+				os.Exit(1)
+			}
+			promptText = string(data)
 		}
-		promptText = string(data)
 	}
 	if promptText == "" {
 		fmt.Fprintln(os.Stderr, "error: no prompt provided (use -prompt flag or pipe to stdin)")
 		os.Exit(1)
+	}
+	// In multi-turn mode with -prompt flag, create scanner for follow-up reading.
+	if *multiTurn && stdinScanner == nil {
+		stdinScanner = bufio.NewScanner(os.Stdin)
 	}
 
 	// Resolve CWD
@@ -76,6 +96,32 @@ func main() {
 
 	// Build tool registry with core tools
 	registry := buildToolRegistry(cwd)
+
+	// Set up Ctrl+C support early (needed for MCP connect timeouts).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	// Connect MCP servers if -mcp-config is provided.
+	var mcpServers map[string]types.McpServerConfig
+	if *mcpConfig != "" {
+		var err error
+		mcpServers, err = loadMCPConfig(*mcpConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error loading MCP config: %v\n", err)
+			os.Exit(1)
+		}
+		mcpClient := mcp.NewClient(registry)
+		defer mcpClient.Close()
+		for name, cfg := range mcpServers {
+			if err := mcpClient.Connect(ctx, name, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to connect MCP server %q: %v\n", name, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "connected MCP server: %s\n", name)
+			}
+		}
+		registry.Register(&tools.ListMcpResourcesTool{Client: mcpClient})
+		registry.Register(&tools.ReadMcpResourceTool{Client: mcpClient})
+	}
 
 	// Load skills if -skills-dir is provided (for skill-augmented benchmarks).
 	// The loader scans {skillsDir}/.claude/skills/{name}/SKILL.md following
@@ -119,6 +165,12 @@ func main() {
 	if skillRegistry != nil {
 		config.Skills = skillRegistry
 	}
+	if mcpServers != nil {
+		config.MCPServers = mcpServers
+	}
+	if *multiTurn {
+		config.MultiTurn = true
+	}
 
 	// Groq/Llama-specific tuning: use a concise system prompt and compact tool
 	// descriptions to reduce "Failed to call a function" errors.
@@ -130,13 +182,17 @@ func main() {
 		config.Prompter = &prompt.Assembler{}
 	}
 
-	// Run with Ctrl+C support
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
 	query := agent.RunLoop(ctx, promptText, config)
 
-	// Consume messages, capture final assistant text
+	if *multiTurn {
+		runMultiTurn(query, stdinScanner)
+	} else {
+		runSingleShot(query)
+	}
+}
+
+// runSingleShot consumes all messages and prints the final assistant text (existing behavior).
+func runSingleShot(query *agent.Query) {
 	var lastText string
 	for msg := range query.Messages() {
 		switch m := msg.(type) {
@@ -153,6 +209,87 @@ func main() {
 	}
 }
 
+// runMultiTurn runs a REPL loop: after each turn completes, it reads the next
+// line from stdinScanner and sends it as a follow-up message. EOF or empty line
+// terminates the session.
+func runMultiTurn(query *agent.Query, stdinScanner *bufio.Scanner) {
+	turnDone := make(chan struct{}, 1)
+	loopDone := make(chan struct{})
+	var lastText string
+
+	// Message consumer goroutine
+	go func() {
+		defer close(loopDone)
+		for msg := range query.Messages() {
+			switch m := msg.(type) {
+			case types.AssistantMessage:
+				lastText = extractText(m)
+			case *types.AssistantMessage:
+				lastText = extractText(*m)
+			case types.ResultMessage:
+				if m.Subtype == types.ResultSubtypeSuccessTurn {
+					if lastText != "" {
+						fmt.Println(lastText)
+						lastText = ""
+					}
+					printTurnMeta(m)
+					select {
+					case turnDone <- struct{}{}:
+					default:
+					}
+				}
+			case *types.ResultMessage:
+				if m.Subtype == types.ResultSubtypeSuccessTurn {
+					if lastText != "" {
+						fmt.Println(lastText)
+						lastText = ""
+					}
+					printTurnMeta(*m)
+					select {
+					case turnDone <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	// REPL: wait for turn to complete, read next line, send follow-up.
+	for {
+		select {
+		case <-turnDone:
+			// Ready for next input
+		case <-loopDone:
+			goto exit
+		}
+		if !stdinScanner.Scan() {
+			break // EOF
+		}
+		line := stdinScanner.Text()
+		if line == "" {
+			break // empty line = done
+		}
+		if err := query.SendUserMessage([]byte(line)); err != nil {
+			fmt.Fprintf(os.Stderr, "error sending message: %v\n", err)
+			break
+		}
+	}
+
+exit:
+	query.Close()
+	query.Wait()
+
+	// Print any remaining text from the final turn
+	if lastText != "" {
+		fmt.Print(lastText)
+	}
+}
+
+// printTurnMeta writes machine-readable turn metadata to stderr.
+func printTurnMeta(m types.ResultMessage) {
+	fmt.Fprintf(os.Stderr, `{"turn":%d,"cost_usd":%.6f}`+"\n", m.NumTurns, m.TotalCostUSD)
+}
+
 // extractText pulls the text content from an AssistantMessage.
 func extractText(m types.AssistantMessage) string {
 	for _, block := range m.Message.Content {
@@ -161,6 +298,23 @@ func extractText(m types.AssistantMessage) string {
 		}
 	}
 	return ""
+}
+
+// loadMCPConfig reads a JSON file containing MCP server configurations.
+// The file must contain a non-empty JSON object mapping server names to configs.
+func loadMCPConfig(path string) (map[string]types.McpServerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading MCP config: %w", err)
+	}
+	var servers map[string]types.McpServerConfig
+	if err := json.Unmarshal(data, &servers); err != nil {
+		return nil, fmt.Errorf("parsing MCP config: %w", err)
+	}
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("MCP config is empty (no servers defined)")
+	}
+	return servers, nil
 }
 
 // buildToolRegistry creates a registry with the 6 core eval tools.
