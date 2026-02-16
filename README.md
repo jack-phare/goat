@@ -1,4 +1,4 @@
-# Goat
+# Goat v0.1
 
 Go port of the [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview) agentic loop.
 
@@ -170,14 +170,33 @@ See [docs/evals](docs/evals/README.md) for full setup, all benchmarks, and troub
 
 **Cloud (Modal)** -- parallel sandboxed execution with A/B testing of skills and MCP augmentations. Supports cross-model comparison and Langfuse observability.
 
+Requires one-time setup: `uv tool install modal && modal setup`, then deploy the LiteLLM proxy and supporting services onto the `goat` Modal environment:
+
+```bash
+uv run --with modal python scripts/modal_setup.py     # create goat environment + secrets
+modal deploy scripts/modal_services.py --env goat      # deploy LiteLLM + Langfuse + Postgres
+bash scripts/build_eval.sh                             # build goat-eval-linux binary
+```
+
+Optionally deploy local GPU models via vLLM (each scales to zero independently):
+
+```bash
+VLLM_MODEL=llama-3.1-8b modal deploy scripts/modal_vllm.py --env goat
+VLLM_MODEL=qwen3-4b modal deploy scripts/modal_vllm.py --env goat
+```
+
+Then run evals:
+
 ```bash
 # Single task
-uv run python scripts/modal_sandbox.py --prompt "What is 2+2?"
+uv run --with modal python scripts/modal_sandbox.py --prompt "What is 2+2?"
 
 # Batch with A/B (baseline vs +skills vs +skills+mcp)
-uv run python scripts/modal_sandbox.py --batch scripts/benchmark_smoke.json \
+uv run --with modal python scripts/modal_sandbox.py --batch scripts/benchmark_smoke.json \
   --skills-dir eval/skills --mcp-config eval/mcp_configs/filesystem.json --ab
 ```
+
+The sandbox auto-discovers the LiteLLM proxy URL from the deployed `goat-services` app. Without it, sandboxes cannot reach an LLM endpoint.
 
 See [scripts/README.md](scripts/README.md) for Modal deployment, vLLM GPU serving, and infrastructure details.
 
